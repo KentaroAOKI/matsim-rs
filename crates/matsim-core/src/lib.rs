@@ -217,6 +217,23 @@ pub struct PersonScoreBreakdown {
 }
 
 #[derive(Debug, Clone)]
+pub struct PersonRerouteExplanation {
+    pub person_id: String,
+    pub legs: Vec<RerouteLegExplanation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RerouteLegExplanation {
+    pub leg_index: usize,
+    pub mode: String,
+    pub current_link_ids: Vec<String>,
+    pub current_cost_seconds: f64,
+    pub rerouted_node_ids: Vec<String>,
+    pub rerouted_link_ids: Vec<String>,
+    pub rerouted_cost_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ScoreBreakdownItem {
     pub label: String,
     pub start_time_seconds: f64,
@@ -566,6 +583,88 @@ pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<Pers
         &scenario.network,
         &simulation.leg_times[person_index],
     ))
+}
+
+pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<PersonRerouteExplanation> {
+    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    let simulation = simulate_traffic(&scenario.population, &scenario.network);
+    let plan = person.selected_plan();
+    let mut legs = Vec::new();
+
+    for (element_index, element) in plan.elements.iter().enumerate() {
+        let PlanElement::Leg(leg) = element else {
+            continue;
+        };
+        let previous_activity = previous_activity_at(plan, element_index);
+        let next_activity = next_activity_at(plan, element_index);
+        let current_link_ids = route_link_sequence(leg, previous_activity, next_activity, &scenario.network)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let current_cost_seconds = current_link_ids
+            .iter()
+            .map(|link_id| {
+                simulation
+                    .observed_link_costs
+                    .get(link_id)
+                    .copied()
+                    .or_else(|| {
+                        scenario
+                            .network
+                            .links
+                            .get(link_id)
+                            .map(|link| link.length_m / link.freespeed_mps)
+                    })
+                    .unwrap_or(0.0)
+            })
+            .sum::<f64>();
+        let rerouted_node_ids = shortest_route_node_ids(
+            &scenario.network,
+            previous_activity.and_then(|activity| activity.link_id.as_deref()),
+            next_activity.and_then(|activity| activity.link_id.as_deref()),
+            &simulation.observed_link_costs,
+        )
+        .unwrap_or_default();
+        let rerouted_leg = Leg {
+            mode: leg.mode.clone(),
+            route_node_ids: rerouted_node_ids.clone(),
+        };
+        let rerouted_link_ids = route_link_sequence(&rerouted_leg, previous_activity, next_activity, &scenario.network)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let rerouted_cost_seconds = rerouted_link_ids
+            .iter()
+            .map(|link_id| {
+                simulation
+                    .observed_link_costs
+                    .get(link_id)
+                    .copied()
+                    .or_else(|| {
+                        scenario
+                            .network
+                            .links
+                            .get(link_id)
+                            .map(|link| link.length_m / link.freespeed_mps)
+                    })
+                    .unwrap_or(0.0)
+            })
+            .sum::<f64>();
+        legs.push(RerouteLegExplanation {
+            leg_index: legs.len(),
+            mode: leg.mode.clone(),
+            current_link_ids,
+            current_cost_seconds,
+            rerouted_node_ids,
+            rerouted_link_ids,
+            rerouted_cost_seconds,
+        });
+    }
+
+    Some(PersonRerouteExplanation {
+        person_id: person.id.clone(),
+        legs,
+    })
 }
 
 fn write_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {

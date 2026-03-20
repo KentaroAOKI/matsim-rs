@@ -482,7 +482,7 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matsim_core::run_iterations;
+    use matsim_core::{explain_person_reroute, run_iterations};
     use std::path::PathBuf;
 
     #[test]
@@ -587,5 +587,19 @@ mod tests {
             output.iterations[1].travel_distance_stats.avg_leg_distance_per_person_m
                 < output.iterations[0].travel_distance_stats.avg_leg_distance_per_person_m
         );
+    }
+
+    #[test]
+    fn explains_reroute_fixture_person_route_change() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/reroute/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let explanation = explain_person_reroute(&scenario, "1").unwrap();
+        assert_eq!(explanation.legs.len(), 1);
+        assert_eq!(explanation.legs[0].current_link_ids, vec!["slow-1", "slow-2", "end"]);
+        assert_eq!(explanation.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert!(explanation.legs[0].rerouted_cost_seconds < explanation.legs[0].current_cost_seconds);
     }
 }

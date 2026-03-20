@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use matsim_core::{explain_person_score, run_iterations, write_outputs};
+use matsim_core::{explain_person_reroute, explain_person_score, run_iterations, write_outputs};
 use matsim_io::load_scenario;
 use thiserror::Error;
 
@@ -27,6 +27,12 @@ enum Command {
         right: PathBuf,
     },
     Explain {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        person_id: String,
+    },
+    ExplainReroute {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
@@ -63,6 +69,7 @@ fn run() -> Result<(), CliError> {
         Command::Run { config } => run_command(&config),
         Command::Compare { left, right } => compare_command(&left, &right),
         Command::Explain { config, person_id } => explain_command(&config, &person_id),
+        Command::ExplainReroute { config, person_id } => explain_reroute_command(&config, &person_id),
     }
 }
 
@@ -150,6 +157,24 @@ fn explain_command(config_path: &Path, person_id: &str) -> Result<(), CliError> 
             "{} start={} end={} score={:.6}",
             item.label, item.start_time_seconds, item.end_time_seconds, item.score
         );
+    }
+    Ok(())
+}
+
+fn explain_reroute_command(config_path: &Path, person_id: &str) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let explanation =
+        explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+
+    println!("person_id={}", explanation.person_id);
+    for leg in explanation.legs {
+        println!(
+            "leg={} mode={} current_cost={:.6} rerouted_cost={:.6}",
+            leg.leg_index, leg.mode, leg.current_cost_seconds, leg.rerouted_cost_seconds
+        );
+        println!("  current_links={}", leg.current_link_ids.join(","));
+        println!("  rerouted_nodes={}", leg.rerouted_node_ids.join(","));
+        println!("  rerouted_links={}", leg.rerouted_link_ids.join(","));
     }
     Ok(())
 }
