@@ -71,6 +71,10 @@ enum Command {
         sort_by: PopulationSortKey,
         #[arg(long)]
         limit: Option<usize>,
+        #[arg(long, default_value_t = 0.0)]
+        min_reroute_gain: f64,
+        #[arg(long)]
+        csv: bool,
     },
 }
 
@@ -149,7 +153,9 @@ fn run() -> Result<(), CliError> {
             iteration,
             sort_by,
             limit,
-        } => inspect_population_command(&config, iteration, sort_by, limit),
+            min_reroute_gain,
+            csv,
+        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv),
     }
 }
 
@@ -361,6 +367,8 @@ fn inspect_population_command(
     iteration: Option<u32>,
     sort_by: PopulationSortKey,
     limit: Option<usize>,
+    min_reroute_gain: f64,
+    csv: bool,
 ) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let mut rows = Vec::new();
@@ -394,6 +402,8 @@ fn inspect_population_command(
         ));
     }
 
+    rows.retain(|row| row.4 >= min_reroute_gain);
+
     match sort_by {
         PopulationSortKey::Id => rows.sort_by(|left, right| left.0.cmp(&right.0)),
         PopulationSortKey::Score => rows.sort_by(|left, right| right.3.total_cmp(&left.3).then_with(|| left.0.cmp(&right.0))),
@@ -405,6 +415,14 @@ fn inspect_population_command(
 
     if let Some(limit) = limit {
         rows.truncate(limit);
+    }
+
+    if csv {
+        println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+        for row in rows {
+            println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
+        }
+        return Ok(());
     }
 
     if let Some(iteration) = iteration {
@@ -420,6 +438,7 @@ fn inspect_population_command(
     if let Some(limit) = limit {
         println!("limit={limit}");
     }
+    println!("min_reroute_gain={min_reroute_gain:.6}");
     println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
     for row in rows {
         println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
