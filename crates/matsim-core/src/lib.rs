@@ -165,6 +165,12 @@ struct SimulationState {
     person_stats: Vec<PersonScoreStats>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SimulationSnapshot {
+    leg_times: Vec<Vec<f64>>,
+    observed_link_costs: BTreeMap<String, f64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PersonScoreStats {
     last_executed: f64,
@@ -266,7 +272,7 @@ impl SimulationState {
 }
 
 fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration: u32) -> IterationOutput {
-    let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
+    let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
     let mut total_leg_distance_m = 0.0_f64;
@@ -300,7 +306,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         .population
         .persons
         .iter()
-        .zip(simulated_leg_times.iter())
+        .zip(simulation.leg_times.iter())
         .map(|(person, leg_times)| {
             score_plan(
                 &person.selected_plan(),
@@ -366,7 +372,8 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         avg_average,
         avg_best,
     };
-    let replanning_summary = apply_replanning_hook(scenario, &executed_scores, iteration);
+    let replanning_summary =
+        apply_replanning_hook(scenario, &executed_scores, &simulation.observed_link_costs, iteration);
 
     IterationOutput {
         iteration,
@@ -377,7 +384,12 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
     }
 }
 
-fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], iteration: u32) -> ReplanningSummary {
+fn apply_replanning_hook(
+    scenario: &mut Scenario,
+    executed_scores: &[f64],
+    observed_link_costs: &BTreeMap<String, f64>,
+    iteration: u32,
+) -> ReplanningSummary {
     for (person, executed_score) in scenario
         .population
         .persons
@@ -395,7 +407,6 @@ fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], itera
     }
 
     let mut persons_replanned = 0usize;
-    let reroute_link_costs = estimate_reroute_link_costs(&scenario.population, &scenario.network);
     for person in &mut scenario.population.persons {
         let Some(strategy_name) = select_strategy(
             &scenario.config.replanning.strategies,
@@ -408,7 +419,7 @@ fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], itera
 
         let replanned = match strategy_name {
             "BestScore" => apply_best_score_strategy(person),
-            "ReRoute" => reroute_selected_plan(person, &scenario.network, &reroute_link_costs),
+            "ReRoute" => reroute_selected_plan(person, &scenario.network, observed_link_costs),
             _ => false,
         };
         if replanned {
@@ -479,39 +490,6 @@ fn apply_best_score_strategy(person: &mut Person) -> bool {
     false
 }
 
-fn estimate_reroute_link_costs(population: &Population, network: &Network) -> BTreeMap<String, f64> {
-    let mut link_traversals = BTreeMap::<String, usize>::new();
-
-    for person in &population.persons {
-        let plan = person.selected_plan();
-        for (leg_index, element) in plan.elements.iter().enumerate() {
-            let PlanElement::Leg(leg) = element else {
-                continue;
-            };
-            let previous_activity = previous_activity_at(plan, leg_index);
-            let next_activity = next_activity_at(plan, leg_index);
-            for link_id in route_link_sequence(leg, previous_activity, next_activity, network) {
-                *link_traversals.entry(link_id.to_string()).or_default() += 1;
-            }
-        }
-    }
-
-    network
-        .links
-        .iter()
-        .map(|(link_id, link)| {
-            let free_speed_time_s = link.length_m / link.freespeed_mps;
-            let headway_s = if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
-                3600.0 / link.capacity_veh_per_hour
-            } else {
-                0.0
-            };
-            let traversal_count = link_traversals.get(link_id).copied().unwrap_or(0) as f64;
-            (link_id.clone(), free_speed_time_s + traversal_count * headway_s)
-        })
-        .collect()
-}
-
 fn reroute_selected_plan(person: &mut Person, network: &Network, link_costs: &BTreeMap<String, f64>) -> bool {
     let mut rerouted_plan = person.selected_plan().clone();
     let mut rerouted = false;
@@ -559,7 +537,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
 
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
-    let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
+    let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let person_index = scenario
         .population
         .persons
@@ -569,7 +547,7 @@ pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<Pers
         person,
         &scenario.config.scoring,
         &scenario.network,
-        &simulated_leg_times[person_index],
+        &simulation.leg_times[person_index],
     ))
 }
 
@@ -675,7 +653,7 @@ fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity
         .sum()
 }
 
-fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<Vec<f64>> {
+fn simulate_traffic(population: &Population, network: &Network) -> SimulationSnapshot {
     let mut travel_times = population
         .persons
         .iter()
@@ -689,6 +667,8 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
             vec![0.0; leg_count]
         })
         .collect::<Vec<_>>();
+    let mut observed_link_sums = BTreeMap::<String, f64>::new();
+    let mut observed_link_counts = BTreeMap::<String, usize>::new();
 
     let mut pending = BinaryHeap::new();
     for (person_index, person) in population.persons.iter().enumerate() {
@@ -727,6 +707,9 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
             } else {
                 0.0
             };
+            let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
+            *observed_link_sums.entry(link_id.to_string()).or_default() += observed_travel_time_s;
+            *observed_link_counts.entry(link_id.to_string()).or_default() += 1;
             next_link_exit_time_s.insert(link_id.to_string(), exit_time_s + headway_s);
             current_time_s = exit_time_s;
         }
@@ -752,7 +735,23 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
         }
     }
 
-    travel_times
+    let observed_link_costs = network
+        .links
+        .iter()
+        .map(|(link_id, link)| {
+            let observed_cost_s = observed_link_sums
+                .get(link_id)
+                .zip(observed_link_counts.get(link_id))
+                .map(|(sum, count)| *sum / (*count as f64))
+                .unwrap_or_else(|| link.length_m / link.freespeed_mps);
+            (link_id.clone(), observed_cost_s)
+        })
+        .collect();
+
+    SimulationSnapshot {
+        leg_times: travel_times,
+        observed_link_costs,
+    }
 }
 
 fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
@@ -1361,7 +1360,7 @@ mod tests {
             },
         };
 
-        let summary = apply_replanning_hook(&mut scenario, &[1.0], 0);
+        let summary = apply_replanning_hook(&mut scenario, &[1.0], &BTreeMap::new(), 0);
 
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(scenario.population.persons[0].selected_plan_index, 1);
@@ -1437,7 +1436,8 @@ mod tests {
             },
         };
 
-        let summary = apply_replanning_hook(&mut scenario, &[0.0], 0);
+        let simulation = simulate_traffic(&scenario.population, &scenario.network);
+        let summary = apply_replanning_hook(&mut scenario, &[0.0], &simulation.observed_link_costs, 0);
         let person = &scenario.population.persons[0];
         let PlanElement::Leg(leg) = &person.selected_plan().elements[1] else {
             panic!("expected leg element");
@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn reroute_uses_estimated_link_costs_not_just_free_speed() {
+    fn reroute_uses_observed_link_costs_not_just_free_speed() {
         let mut network = Network::default();
         for (id, from_node_id, to_node_id, length, capacity) in [
             ("start", "s0", "s1", 10.0, 3600.0),
@@ -1492,41 +1492,69 @@ mod tests {
             },
             network,
             population: Population {
-                persons: vec![Person {
-                    id: "1".to_string(),
-                    plans: vec![Plan {
-                        score: None,
-                        elements: vec![
-                            PlanElement::Activity(Activity {
-                                activity_type: "h".to_string(),
-                                link_id: Some("start".to_string()),
-                                end_time_seconds: Some(0.0),
-                                duration_seconds: None,
-                            }),
-                            PlanElement::Leg(Leg {
-                                mode: "car".to_string(),
-                                route_node_ids: vec!["fast".to_string(), "target".to_string()],
-                            }),
-                            PlanElement::Activity(Activity {
-                                activity_type: "w".to_string(),
-                                link_id: Some("end".to_string()),
-                                end_time_seconds: None,
-                                duration_seconds: Some(3600.0),
-                            }),
-                        ],
-                    }],
-                    selected_plan_index: 0,
-                }],
+                persons: vec![
+                    Person {
+                        id: "1".to_string(),
+                        plans: vec![Plan {
+                            score: None,
+                            elements: vec![
+                                PlanElement::Activity(Activity {
+                                    activity_type: "h".to_string(),
+                                    link_id: Some("start".to_string()),
+                                    end_time_seconds: Some(0.0),
+                                    duration_seconds: None,
+                                }),
+                                PlanElement::Leg(Leg {
+                                    mode: "car".to_string(),
+                                    route_node_ids: vec!["fast".to_string(), "target".to_string()],
+                                }),
+                                PlanElement::Activity(Activity {
+                                    activity_type: "w".to_string(),
+                                    link_id: Some("end".to_string()),
+                                    end_time_seconds: None,
+                                    duration_seconds: Some(3600.0),
+                                }),
+                            ],
+                        }],
+                        selected_plan_index: 0,
+                    },
+                    Person {
+                        id: "2".to_string(),
+                        plans: vec![Plan {
+                            score: None,
+                            elements: vec![
+                                PlanElement::Activity(Activity {
+                                    activity_type: "h".to_string(),
+                                    link_id: Some("start".to_string()),
+                                    end_time_seconds: Some(0.0),
+                                    duration_seconds: None,
+                                }),
+                                PlanElement::Leg(Leg {
+                                    mode: "car".to_string(),
+                                    route_node_ids: vec!["fast".to_string(), "target".to_string()],
+                                }),
+                                PlanElement::Activity(Activity {
+                                    activity_type: "w".to_string(),
+                                    link_id: Some("end".to_string()),
+                                    end_time_seconds: None,
+                                    duration_seconds: Some(3600.0),
+                                }),
+                            ],
+                        }],
+                        selected_plan_index: 0,
+                    },
+                ],
             },
         };
 
-        let summary = apply_replanning_hook(&mut scenario, &[0.0], 0);
+        let simulation = simulate_traffic(&scenario.population, &scenario.network);
+        let summary = apply_replanning_hook(&mut scenario, &[0.0, 0.0], &simulation.observed_link_costs, 0);
         let person = &scenario.population.persons[0];
         let PlanElement::Leg(leg) = &person.selected_plan().elements[1] else {
             panic!("expected leg element");
         };
 
-        assert_eq!(summary.persons_replanned, 1);
+        assert_eq!(summary.persons_replanned, 2);
         assert_eq!(leg.route_node_ids, vec!["slow", "target"]);
     }
 
@@ -1611,7 +1639,8 @@ mod tests {
             },
         };
 
-        let summary = apply_replanning_hook(&mut scenario, &[100.0], 0);
+        let simulation = simulate_traffic(&scenario.population, &scenario.network);
+        let summary = apply_replanning_hook(&mut scenario, &[100.0], &simulation.observed_link_costs, 0);
         let person = &scenario.population.persons[0];
 
         assert_eq!(summary.persons_replanned, 1);
