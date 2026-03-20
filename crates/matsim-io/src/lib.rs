@@ -135,6 +135,9 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     Some("controller") if name == "lastIteration" => {
                         last_iteration = value.parse::<u32>().unwrap_or(0);
                     }
+                    Some("replanning") if name == "maxAgentPlanMemorySize" => {
+                        replanning.max_agent_plan_memory_size = value.parse::<usize>().ok();
+                    }
                     Some("scoring") if name == "performing" => {
                         scoring.performing_utils_per_hour = parse_scoring_value(path, &value)?;
                     }
@@ -517,6 +520,7 @@ mod tests {
         assert_eq!(config.replanning.strategies[0].name, "BestScore");
         assert_eq!(config.replanning.strategies[1].weight, 0.1);
         assert_eq!(config.replanning.strategies[0].disable_after_fraction, None);
+        assert_eq!(config.replanning.max_agent_plan_memory_size, None);
     }
 
     #[test]
@@ -649,5 +653,17 @@ mod tests {
         assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
         assert_eq!(output.iterations[2].replanning_summary.persons_replanned, 0);
         assert_eq!(output.iterations[3].replanning_summary.persons_replanned, 0);
+    }
+
+    #[test]
+    fn parses_plan_memory_cap_from_replanning_module() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/plan-memory-cap/config.xml");
+        let config = load_config(&root).unwrap();
+
+        assert_eq!(config.replanning.max_agent_plan_memory_size, Some(1));
+        assert_eq!(config.replanning.strategies.len(), 1);
+        assert_eq!(config.replanning.strategies[0].name, "BestScore");
     }
 }

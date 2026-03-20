@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<!DOCTYPE config SYSTEM "http://www.matsim.org/files/dtd/config_v2.dtd">
+<config>
+  <module name="global">
+    <param name="randomSeed" value="1" />
+  </module>
+
+  <module name="network">
+    <param name="inputNetworkFile" value="../mixed-replanning/network.xml" />
+  </module>
+
+  <module name="plans">
+    <param name="inputPlansFile" value="../mixed-replanning/plans.xml" />
+  </module>
+
+  <module name="controller">
+    <param name="outputDirectory" value="./output" />
+    <param name="lastIteration" value="1" />
+  </module>
+
+  <module name="replanning">
+    <param name="maxAgentPlanMemorySize" value="1" />
+    <parameterset type="strategysettings">
+      <param name="strategyName" value="BestScore" />
+      <param name="weight" value="1.0" />
+    </parameterset>
+  </module>
+</config>

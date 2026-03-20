@@ -28,6 +28,7 @@ pub struct ScoringConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ReplanningConfig {
     pub strategies: Vec<StrategySetting>,
+    pub max_agent_plan_memory_size: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -460,12 +461,60 @@ fn apply_replanning_hook(
         if replanned {
             persons_replanned += 1;
         }
+        prune_plans(person, scenario.config.replanning.max_agent_plan_memory_size);
     }
 
     ReplanningSummary {
         strategies_considered: scenario.config.replanning.strategies.len(),
         persons_replanned,
     }
+}
+
+fn prune_plans(person: &mut Person, max_agent_plan_memory_size: Option<usize>) {
+    let Some(max_size) = max_agent_plan_memory_size else {
+        return;
+    };
+    if max_size == 0 || person.plans.len() <= max_size {
+        return;
+    }
+
+    let selected_index = person.selected_plan_index;
+    let mut plan_order = person
+        .plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| (index, plan.score.unwrap_or(f64::NEG_INFINITY)))
+        .collect::<Vec<_>>();
+    plan_order.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    let mut keep = plan_order
+        .into_iter()
+        .take(max_size)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if !keep.contains(&selected_index) {
+        if let Some((lowest_position, _)) = keep
+            .iter()
+            .enumerate()
+            .map(|(position, index)| (position, person.plans[*index].score.unwrap_or(f64::NEG_INFINITY)))
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+        {
+            keep[lowest_position] = selected_index;
+        }
+    }
+    keep.sort_unstable();
+
+    let new_selected_index = keep
+        .iter()
+        .position(|index| *index == selected_index)
+        .unwrap_or(0);
+    let old_plans = std::mem::take(&mut person.plans);
+    person.plans = old_plans
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, plan)| keep.binary_search(&index).ok().map(|_| plan))
+        .collect();
+    person.selected_plan_index = new_selected_index;
 }
 
 fn select_strategy<'a>(
@@ -1489,6 +1538,7 @@ mod tests {
                         weight: 1.0,
                         disable_after_fraction: None,
                     }],
+                    max_agent_plan_memory_size: None,
                 },
             },
             network: Network::default(),
@@ -1555,6 +1605,7 @@ mod tests {
                         weight: 1.0,
                         disable_after_fraction: None,
                     }],
+                    max_agent_plan_memory_size: None,
                 },
             },
             network,
@@ -1640,6 +1691,7 @@ mod tests {
                         weight: 1.0,
                         disable_after_fraction: None,
                     }],
+                    max_agent_plan_memory_size: None,
                 },
             },
             network,
@@ -1755,6 +1807,7 @@ mod tests {
                             disable_after_fraction: None,
                         },
                     ],
+                    max_agent_plan_memory_size: None,
                 },
             },
             network,
@@ -1819,5 +1872,34 @@ mod tests {
         assert!(strategy_is_active(&reroute, 1, 4));
         assert!(!strategy_is_active(&reroute, 2, 4));
         assert!(strategy_is_active(&best_score, 2, 4));
+    }
+
+    #[test]
+    fn prune_plans_keeps_selected_plan_within_memory_limit() {
+        let mut person = Person {
+            id: "1".to_string(),
+            plans: vec![
+                Plan {
+                    score: Some(1.0),
+                    elements: Vec::new(),
+                },
+                Plan {
+                    score: Some(10.0),
+                    elements: Vec::new(),
+                },
+                Plan {
+                    score: Some(5.0),
+                    elements: Vec::new(),
+                },
+            ],
+            selected_plan_index: 2,
+        };
+
+        prune_plans(&mut person, Some(2));
+
+        assert_eq!(person.plans.len(), 2);
+        assert_eq!(person.selected_plan_index, 1);
+        assert_eq!(person.plans[0].score, Some(10.0));
+        assert_eq!(person.plans[1].score, Some(5.0));
     }
 }
