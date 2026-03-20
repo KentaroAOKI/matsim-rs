@@ -3533,12 +3533,12 @@ fn simulate_link_traversal(
         to_node_id: link.to_node_id.clone(),
         headway_s: ready_to_leave.headway_s,
     });
-    let offer_snapshot = queue_state
-        .first_pending_node_step_batch()
-        .filter(|batch| {
-            batch.to_node_id == link.to_node_id
-                && batch.sim_step == ready_to_leave.free_speed_exit_s.floor() as i64
-        })
+    let node_step_batch = queue_state.first_pending_node_step_batch().filter(|batch| {
+        batch.to_node_id == link.to_node_id
+            && batch.sim_step == ready_to_leave.free_speed_exit_s.floor() as i64
+    });
+    let offer_snapshot = node_step_batch
+        .clone()
         .map(|batch| batch.offer_snapshot)
         .unwrap_or_else(|| {
             queue_state.snapshot_node_offers(
@@ -3555,7 +3555,10 @@ fn simulate_link_traversal(
         queue_node_state.note_ready_vehicle(link_id);
         queue_node_state.prepare_crossing(link_id, &ready_to_leave, &offer_snapshot)
     };
-    let pending_offer = queue_state.dequeue_pending_offer_for_decision(&decision, &link.to_node_id);
+    let pending_offer = node_step_batch
+        .as_ref()
+        .and_then(|batch| queue_state.dequeue_pending_offer_from_batch(batch, &decision))
+        .or_else(|| queue_state.dequeue_pending_offer_for_decision(&decision, &link.to_node_id));
     let crossing = {
         let queue_link_state = queue_state
             .link_states
@@ -3810,6 +3813,20 @@ impl QueueSimulationState {
         let offer_index = self.pending_node_offers.iter().position(|offer| {
             offer.to_node_id == to_node_id
                 && offer.sim_step == decision.sim_step
+                && offer.inbound_link_id == selected_inbound_link_id
+        })?;
+        self.pending_node_offers.remove(offer_index)
+    }
+
+    fn dequeue_pending_offer_from_batch(
+        &mut self,
+        batch: &NodeStepOfferBatch,
+        decision: &NodeCrossingDecision,
+    ) -> Option<PendingNodeOffer> {
+        let selected_inbound_link_id = decision.selected_inbound_link_id.as_deref()?;
+        let offer_index = self.pending_node_offers.iter().position(|offer| {
+            offer.to_node_id == batch.to_node_id
+                && offer.sim_step == batch.sim_step
                 && offer.inbound_link_id == selected_inbound_link_id
         })?;
         self.pending_node_offers.remove(offer_index)
