@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use matsim_core::{
     Activity, ActivityScoringParameters, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
-    Population, Scenario, ScoringConfig,
+    Population, Scenario, ScoringConfig, ModeScoringParameters,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -70,6 +70,8 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
     let mut current_paramset_type: Option<String> = None;
     let mut current_activity_params = ActivityScoringParameters::default();
     let mut current_activity_type: Option<String> = None;
+    let mut current_mode_params = ModeScoringParameters::default();
+    let mut current_mode: Option<String> = None;
 
     loop {
         match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
@@ -84,6 +86,9 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                 if current_paramset_type.as_deref() == Some("activityParams") {
                     current_activity_params = ActivityScoringParameters::default();
                     current_activity_type = None;
+                } else if current_paramset_type.as_deref() == Some("modeParams") {
+                    current_mode_params = ModeScoringParameters::default();
+                    current_mode = None;
                 }
             }
             Event::End(ref e) if e.name().as_ref() == b"module" => {
@@ -93,6 +98,10 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                 if current_paramset_type.as_deref() == Some("activityParams") {
                     if let Some(activity_type) = current_activity_type.take() {
                         scoring.activity_params.insert(activity_type, current_activity_params.clone());
+                    }
+                } else if current_paramset_type.as_deref() == Some("modeParams") {
+                    if let Some(mode) = current_mode.take() {
+                        scoring.mode_params.insert(mode, current_mode_params.clone());
                     }
                 }
                 current_paramset_type = None;
@@ -116,6 +125,12 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     Some("scoring") if name == "lateArrival" => {
                         scoring.late_arrival_utils_per_hour = parse_scoring_value(path, &value)?;
                     }
+                    Some("scoring") if name == "earlyDeparture" => {
+                        scoring.early_departure_utils_per_hour = parse_scoring_value(path, &value)?;
+                    }
+                    Some("scoring") if name == "waiting" => {
+                        scoring.waiting_utils_per_hour = parse_scoring_value(path, &value)?;
+                    }
                     _ => {}
                 }
 
@@ -123,7 +138,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     && current_paramset_type.as_deref() == Some("activityParams")
                 {
                     match name.as_str() {
-                        "activityType" => current_activity_type = Some(value),
+                        "activityType" => current_activity_type = Some(value.clone()),
                         "typicalDuration" => {
                             current_activity_params.typical_duration_seconds = parse_time(&value)?;
                         }
@@ -141,6 +156,34 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                         }
                         "minimalDuration" => {
                             current_activity_params.minimal_duration_seconds = Some(parse_time(&value)?);
+                        }
+                        _ => {}
+                    }
+                }
+                if current_module.as_deref() == Some("scoring")
+                    && current_paramset_type.as_deref() == Some("modeParams")
+                {
+                    match name.as_str() {
+                        "mode" => current_mode = Some(value.clone()),
+                        "marginalUtilityOfTraveling_util_hr" => {
+                            current_mode_params.marginal_utility_of_traveling_utils_per_hour =
+                                parse_scoring_value(path, &value)?;
+                        }
+                        "marginalUtilityOfDistance_util_m" => {
+                            current_mode_params.marginal_utility_of_distance_utils_per_meter =
+                                parse_f64(path, &value)?;
+                        }
+                        "monetaryDistanceRate" => {
+                            current_mode_params.monetary_distance_rate = parse_f64(path, &value)?;
+                        }
+                        "constant" => {
+                            current_mode_params.constant = parse_f64(path, &value)?;
+                        }
+                        "dailyMonetaryConstant" => {
+                            current_mode_params.daily_monetary_constant = parse_f64(path, &value)?;
+                        }
+                        "dailyUtilityConstant" => {
+                            current_mode_params.daily_utility_constant = parse_f64(path, &value)?;
                         }
                         _ => {}
                     }
@@ -180,12 +223,18 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
                     .map(|value| parse_f64(path, value))
                     .transpose()?
                     .unwrap_or(0.0);
+                let freespeed_mps = attr_string(path, e, b"freespeed")?
+                    .as_deref()
+                    .map(|value| parse_f64(path, value))
+                    .transpose()?
+                    .unwrap_or(1.0);
 
                 network.links.insert(
                     id.clone(),
                     Link {
                         id,
                         length_m,
+                        freespeed_mps,
                     },
                 );
             }
@@ -391,10 +440,38 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_hh_mm_ss_time() {
         assert_eq!(parse_time("06:00:30").unwrap(), 21_630.0);
         assert_eq!(parse_time("00:10").unwrap(), 600.0);
+    }
+
+    #[test]
+    fn loads_equil_benchmark_scoring_params() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-example-project/scenarios/equil/config-benchmark.xml");
+        let config = load_config(&root).unwrap();
+        assert_eq!(config.scoring.performing_utils_per_hour, 6.0);
+        assert_eq!(config.scoring.late_arrival_utils_per_hour, -18.0);
+        assert_eq!(
+            config.scoring.activity_params.get("h").unwrap().typical_duration_seconds,
+            43_200.0
+        );
+        assert_eq!(
+            config.scoring.activity_params.get("w").unwrap().closing_time_seconds,
+            Some(64_800.0)
+        );
+    }
+
+    #[test]
+    fn loads_equil_network_freespeed() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-libs/examples/scenarios/equil/network.xml");
+        let network = load_network(&root).unwrap();
+        assert_eq!(network.links.get("1").unwrap().freespeed_mps, 27.78);
     }
 }

@@ -17,7 +17,10 @@ pub struct MatsimConfig {
 pub struct ScoringConfig {
     pub performing_utils_per_hour: f64,
     pub late_arrival_utils_per_hour: f64,
+    pub early_departure_utils_per_hour: f64,
+    pub waiting_utils_per_hour: f64,
     pub activity_params: BTreeMap<String, ActivityScoringParameters>,
+    pub mode_params: BTreeMap<String, ModeScoringParameters>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -28,6 +31,29 @@ pub struct ActivityScoringParameters {
     pub latest_start_time_seconds: Option<f64>,
     pub earliest_end_time_seconds: Option<f64>,
     pub minimal_duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModeScoringParameters {
+    pub marginal_utility_of_traveling_utils_per_hour: f64,
+    pub marginal_utility_of_distance_utils_per_meter: f64,
+    pub monetary_distance_rate: f64,
+    pub constant: f64,
+    pub daily_monetary_constant: f64,
+    pub daily_utility_constant: f64,
+}
+
+impl Default for ModeScoringParameters {
+    fn default() -> Self {
+        Self {
+            marginal_utility_of_traveling_utils_per_hour: -6.0,
+            marginal_utility_of_distance_utils_per_meter: 0.0,
+            monetary_distance_rate: 0.0,
+            constant: 0.0,
+            daily_monetary_constant: 0.0,
+            daily_utility_constant: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +72,7 @@ pub struct Network {
 pub struct Link {
     pub id: String,
     pub length_m: f64,
+    pub freespeed_mps: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -137,7 +164,6 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
     let mut total_legs = 0usize;
     let mut total_leg_distance_m = 0.0_f64;
     let mut total_plan_distance_m = 0.0_f64;
-    let mut total_score = 0.0_f64;
 
     for person in &scenario.population.persons {
         let mut person_distance_m = 0.0_f64;
@@ -145,15 +171,7 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
 
         for element in &person.selected_plan.elements {
             match element {
-                PlanElement::Activity(activity) => {
-                    total_score += score_activity(
-                        activity,
-                        &scenario.config.scoring,
-                        last_activity.map(|_| 0.0).unwrap_or(0.0),
-                        None,
-                    );
-                    last_activity = Some(activity);
-                }
+                PlanElement::Activity(activity) => last_activity = Some(activity),
                 PlanElement::Leg(leg) => {
                     total_legs += 1;
                     *mode_counts.entry(leg.mode.clone()).or_default() += 1;
@@ -170,11 +188,11 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
 
     let person_count = scenario.population.persons.len() as f64;
     let leg_count = total_legs as f64;
-    total_score = scenario
+    let total_score: f64 = scenario
         .population
         .persons
         .iter()
-        .map(|person| score_plan(&person.selected_plan, &scenario.config.scoring))
+        .map(|person| score_plan(&person.selected_plan, &scenario.config.scoring, &scenario.network))
         .sum();
 
     let score_avg = if person_count > 0.0 { total_score / person_count } else { 0.0 };
@@ -349,7 +367,7 @@ fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity
     distance_m
 }
 
-fn score_plan(plan: &Plan, scoring: &ScoringConfig) -> f64 {
+fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
     let activities: Vec<&Activity> = plan
         .elements
         .iter()
@@ -365,20 +383,41 @@ fn score_plan(plan: &Plan, scoring: &ScoringConfig) -> f64 {
     let mut score = 0.0_f64;
     let mut current_time = 0.0_f64;
     let mut activity_windows: Vec<(usize, f64, f64)> = Vec::with_capacity(activities.len());
+    let mut seen_modes = BTreeMap::<String, ()>::new();
+    let mut last_activity: Option<&Activity> = None;
 
-    for (index, activity) in activities.iter().enumerate() {
-        let start = current_time;
-        let end = if let Some(end_time) = activity.end_time_seconds {
-            end_time
-        } else if let Some(duration) = activity.duration_seconds {
-            start + duration
-        } else if index == activities.len() - 1 {
-            24.0 * 3600.0
-        } else {
-            start
-        };
-        activity_windows.push((index, start, end));
-        current_time = end;
+    for element in &plan.elements {
+        match element {
+            PlanElement::Activity(activity) => {
+                let start = current_time;
+                let end = if let Some(end_time) = activity.end_time_seconds {
+                    end_time
+                } else if let Some(duration) = activity.duration_seconds {
+                    start + duration
+                } else {
+                    start
+                };
+                let activity_index = activity_windows.len();
+                activity_windows.push((activity_index, start, end));
+                current_time = end;
+                last_activity = Some(activity);
+            }
+            PlanElement::Leg(leg) => {
+                let travel_time =
+                    leg_travel_time_seconds(leg, last_activity, next_activity(plan, leg), network);
+                score += score_leg(leg, scoring, network, travel_time, &mut seen_modes);
+                current_time += travel_time;
+            }
+        }
+    }
+
+    if let Some(last) = activities.last() {
+        if let Some((last_index, last_start, last_end)) = activity_windows.last_mut() {
+            if *last_end == *last_start && last.duration_seconds.is_none() && last.end_time_seconds.is_none() {
+                *last_end = 24.0 * 3600.0;
+            }
+            *last_index = activities.len() - 1;
+        }
     }
 
     if activities.len() >= 2 && activities.first().map(|a| a.activity_type.as_str()) == activities.last().map(|a| a.activity_type.as_str()) {
@@ -432,8 +471,9 @@ fn score_activity(
     let duration = (activity_end - activity_start).max(0.0);
     let mut score = 0.0_f64;
     let marginal_utility_of_performing_s = scoring.performing_utils_per_hour / 3600.0;
-    let marginal_utility_of_waiting_s = 0.0;
+    let marginal_utility_of_waiting_s = scoring.waiting_utils_per_hour / 3600.0;
     let marginal_utility_of_late_arrival_s = scoring.late_arrival_utils_per_hour / 3600.0;
+    let marginal_utility_of_early_departure_s = scoring.early_departure_utils_per_hour / 3600.0;
 
     if arrival_time < activity_start {
         score += marginal_utility_of_waiting_s * (activity_start - arrival_time);
@@ -461,16 +501,71 @@ fn score_activity(
 
     if let Some(earliest_end) = params.earliest_end_time_seconds {
         if activity_end < earliest_end {
-            score += marginal_utility_of_late_arrival_s * (earliest_end - activity_end);
+            score += marginal_utility_of_early_departure_s * (earliest_end - activity_end);
         }
     }
     if let Some(minimal_duration) = params.minimal_duration_seconds {
         if duration < minimal_duration {
-            score += marginal_utility_of_late_arrival_s * (minimal_duration - duration);
+            score += marginal_utility_of_early_departure_s * (minimal_duration - duration);
         }
     }
 
     score
+}
+
+fn score_leg(
+    leg: &Leg,
+    scoring: &ScoringConfig,
+    network: &Network,
+    travel_time_seconds: f64,
+    seen_modes: &mut BTreeMap<String, ()>,
+) -> f64 {
+    let params = scoring
+        .mode_params
+        .get(&leg.mode)
+        .cloned()
+        .unwrap_or_default();
+    let distance_m = leg_distance_m(leg, None, None, network);
+    let first_mode_use = seen_modes.insert(leg.mode.clone(), ()).is_none();
+
+    travel_time_seconds * params.marginal_utility_of_traveling_utils_per_hour / 3600.0
+        + distance_m * params.marginal_utility_of_distance_utils_per_meter
+        + if first_mode_use { params.constant + params.daily_utility_constant } else { 0.0 }
+}
+
+fn leg_travel_time_seconds(
+    leg: &Leg,
+    previous_activity: Option<&Activity>,
+    next_activity: Option<&Activity>,
+    network: &Network,
+) -> f64 {
+    let previous_link = previous_activity.and_then(|activity| activity.link_id.as_deref());
+    let next_link = next_activity.and_then(|activity| activity.link_id.as_deref());
+    if leg.route_link_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
+        return 0.0;
+    }
+
+    let mut travel_time = 0.0_f64;
+    if let Some(activity) = previous_activity {
+        if let Some(link_id) = activity.link_id.as_ref() {
+            if let Some(link) = network.links.get(link_id) {
+                travel_time += link.length_m / link.freespeed_mps;
+            }
+        }
+    }
+    for link_id in &leg.route_link_ids {
+        if let Some(link) = network.links.get(link_id) {
+            travel_time += link.length_m / link.freespeed_mps;
+        }
+    }
+    if let Some(activity) = next_activity {
+        if let Some(link_id) = activity.link_id.as_ref() {
+            if let Some(link) = network.links.get(link_id) {
+                travel_time += link.length_m / link.freespeed_mps;
+            }
+        }
+    }
+    travel_time
 }
 
 #[cfg(test)]
@@ -486,6 +581,7 @@ mod tests {
                 Link {
                     id: id.to_string(),
                     length_m: length,
+                    freespeed_mps: 1.0,
                 },
             );
         }
@@ -518,6 +614,7 @@ mod tests {
             Link {
                 id: "1".to_string(),
                 length_m: 10.0,
+                freespeed_mps: 1.0,
             },
         );
 
