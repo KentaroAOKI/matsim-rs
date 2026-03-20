@@ -395,44 +395,23 @@ fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], itera
     }
 
     let mut persons_replanned = 0usize;
-    let has_reroute = scenario
-        .config
-        .replanning
-        .strategies
-        .iter()
-        .any(|strategy| strategy.name == "ReRoute");
-    let has_best_score = scenario
-        .config
-        .replanning
-        .strategies
-        .iter()
-        .any(|strategy| strategy.name == "BestScore");
+    for person in &mut scenario.population.persons {
+        let Some(strategy_name) = select_strategy(
+            &scenario.config.replanning.strategies,
+            scenario.config.random_seed,
+            iteration,
+            &person.id,
+        ) else {
+            continue;
+        };
 
-    if has_reroute {
-        for person in &mut scenario.population.persons {
-            if reroute_selected_plan(person, &scenario.network) {
-                persons_replanned += 1;
-            }
-        }
-    }
-
-    if has_best_score {
-        for person in &mut scenario.population.persons {
-            let current_index = person.selected_plan_index;
-            let best_index = person
-                .plans
-                .iter()
-                .enumerate()
-                .filter_map(|(index, plan)| plan.score.map(|score| (index, score)))
-                .max_by(|left, right| left.1.total_cmp(&right.1))
-                .map(|(index, _)| index)
-                .unwrap_or(current_index);
-            if best_index != current_index {
-                person.selected_plan_index = best_index;
-                if !has_reroute {
-                    persons_replanned += 1;
-                }
-            }
+        let replanned = match strategy_name {
+            "BestScore" => apply_best_score_strategy(person),
+            "ReRoute" => reroute_selected_plan(person, &scenario.network),
+            _ => false,
+        };
+        if replanned {
+            persons_replanned += 1;
         }
     }
 
@@ -442,27 +421,91 @@ fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], itera
     }
 }
 
+fn select_strategy<'a>(
+    strategies: &'a [StrategySetting],
+    random_seed: u64,
+    iteration: u32,
+    person_id: &str,
+) -> Option<&'a str> {
+    let active_strategies = strategies
+        .iter()
+        .filter(|strategy| strategy.weight > 0.0)
+        .collect::<Vec<_>>();
+    let total_weight = active_strategies.iter().map(|strategy| strategy.weight).sum::<f64>();
+    if total_weight <= 0.0 {
+        return None;
+    }
+
+    let draw = replanning_draw(random_seed, iteration, person_id) * total_weight;
+    let mut cumulative_weight = 0.0;
+    for strategy in active_strategies {
+        cumulative_weight += strategy.weight;
+        if draw < cumulative_weight {
+            return Some(strategy.name.as_str());
+        }
+    }
+
+    strategies
+        .iter()
+        .rev()
+        .find(|strategy| strategy.weight > 0.0)
+        .map(|strategy| strategy.name.as_str())
+}
+
+fn replanning_draw(random_seed: u64, iteration: u32, person_id: &str) -> f64 {
+    let mut hash = random_seed ^ (u64::from(iteration) << 32);
+    for byte in person_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    (hash as f64) / ((u64::MAX as f64) + 1.0)
+}
+
+fn apply_best_score_strategy(person: &mut Person) -> bool {
+    let current_index = person.selected_plan_index;
+    let best_index = person
+        .plans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, plan)| plan.score.map(|score| (index, score)))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index)
+        .unwrap_or(current_index);
+    if best_index != current_index {
+        person.selected_plan_index = best_index;
+        return true;
+    }
+    false
+}
+
 fn reroute_selected_plan(person: &mut Person, network: &Network) -> bool {
+    let mut rerouted_plan = person.selected_plan().clone();
     let mut rerouted = false;
 
-    for leg_index in 0..person.selected_plan().elements.len() {
-        let previous_link_id = previous_activity_at(person.selected_plan(), leg_index)
+    for leg_index in 0..rerouted_plan.elements.len() {
+        let previous_link_id = previous_activity_at(&rerouted_plan, leg_index)
             .and_then(|activity| activity.link_id.as_deref());
-        let next_link_id = next_activity_at(person.selected_plan(), leg_index)
+        let next_link_id = next_activity_at(&rerouted_plan, leg_index)
             .and_then(|activity| activity.link_id.as_deref());
-        let Some(PlanElement::Leg(_)) = person.selected_plan().elements.get(leg_index) else {
+        let Some(PlanElement::Leg(_)) = rerouted_plan.elements.get(leg_index) else {
             continue;
         };
         let Some(route_node_ids) = shortest_route_node_ids(network, previous_link_id, next_link_id) else {
             continue;
         };
-        let PlanElement::Leg(leg) = &mut person.selected_plan_mut().elements[leg_index] else {
+        let PlanElement::Leg(leg) = &mut rerouted_plan.elements[leg_index] else {
             continue;
         };
         if leg.route_node_ids != route_node_ids {
             leg.route_node_ids = route_node_ids;
             rerouted = true;
         }
+    }
+
+    if rerouted {
+        rerouted_plan.score = None;
+        person.plans.push(rerouted_plan);
+        person.selected_plan_index = person.plans.len() - 1;
     }
 
     rerouted
@@ -1355,11 +1398,105 @@ mod tests {
         };
 
         let summary = apply_replanning_hook(&mut scenario, &[0.0], 0);
-        let PlanElement::Leg(leg) = &scenario.population.persons[0].selected_plan().elements[1] else {
+        let person = &scenario.population.persons[0];
+        let PlanElement::Leg(leg) = &person.selected_plan().elements[1] else {
             panic!("expected leg element");
         };
 
         assert_eq!(summary.persons_replanned, 1);
+        assert_eq!(person.plans.len(), 2);
+        assert_eq!(person.selected_plan_index, 1);
+        assert_eq!(person.plans[0].score, Some(0.0));
+        assert_eq!(person.plans[1].score, None);
         assert_eq!(leg.route_node_ids, vec!["fast", "target"]);
+    }
+
+    #[test]
+    fn zero_weight_best_score_does_not_override_reroute() {
+        let mut network = Network::default();
+        for (id, from_node_id, to_node_id, length) in [
+            ("start", "s0", "s1", 10.0),
+            ("slow-1", "s1", "slow", 100.0),
+            ("slow-2", "slow", "target", 100.0),
+            ("fast-1", "s1", "fast", 10.0),
+            ("fast-2", "fast", "target", 10.0),
+            ("end", "target", "s2", 10.0),
+        ] {
+            network.links.insert(
+                id.to_string(),
+                Link {
+                    id: id.to_string(),
+                    from_node_id: from_node_id.to_string(),
+                    to_node_id: to_node_id.to_string(),
+                    length_m: length,
+                    freespeed_mps: 10.0,
+                    capacity_veh_per_hour: 3600.0,
+                },
+            );
+        }
+
+        let mut scenario = Scenario {
+            config: MatsimConfig {
+                random_seed: 1,
+                network_path: String::new(),
+                plans_path: String::new(),
+                output_directory: String::new(),
+                last_iteration: 1,
+                scoring: ScoringConfig::default(),
+                replanning: ReplanningConfig {
+                    strategies: vec![
+                        StrategySetting {
+                            name: "BestScore".to_string(),
+                            weight: 0.0,
+                        },
+                        StrategySetting {
+                            name: "ReRoute".to_string(),
+                            weight: 1.0,
+                        },
+                    ],
+                },
+            },
+            network,
+            population: Population {
+                persons: vec![Person {
+                    id: "1".to_string(),
+                    plans: vec![
+                        Plan {
+                            score: Some(100.0),
+                            elements: vec![
+                                PlanElement::Activity(Activity {
+                                    activity_type: "h".to_string(),
+                                    link_id: Some("start".to_string()),
+                                    end_time_seconds: Some(0.0),
+                                    duration_seconds: None,
+                                }),
+                                PlanElement::Leg(Leg {
+                                    mode: "car".to_string(),
+                                    route_node_ids: vec!["slow".to_string(), "target".to_string()],
+                                }),
+                                PlanElement::Activity(Activity {
+                                    activity_type: "w".to_string(),
+                                    link_id: Some("end".to_string()),
+                                    end_time_seconds: None,
+                                    duration_seconds: Some(3600.0),
+                                }),
+                            ],
+                        },
+                        Plan {
+                            score: Some(500.0),
+                            elements: Vec::new(),
+                        },
+                    ],
+                    selected_plan_index: 0,
+                }],
+            },
+        };
+
+        let summary = apply_replanning_hook(&mut scenario, &[100.0], 0);
+        let person = &scenario.population.persons[0];
+
+        assert_eq!(summary.persons_replanned, 1);
+        assert_eq!(person.selected_plan_index, 2);
+        assert_eq!(person.plans.len(), 3);
     }
 }
