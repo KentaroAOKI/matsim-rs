@@ -561,5 +561,10 @@ mod tests {
         assert_eq!(output.iterations.len(), 2);
         assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 1);
         assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
+        assert!((output.iterations[0].score_stats.avg_executed - 86.644_539).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_executed - 99.745_778).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_worst - 86.644_539).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_average - 93.195_159).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_best - 99.745_778).abs() < 1.0e-6);
     }
 }
