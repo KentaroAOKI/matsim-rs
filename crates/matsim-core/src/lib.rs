@@ -3436,6 +3436,11 @@ struct ProcessedSingleNodeOffer {
     crossing: NodeCrossingResult,
 }
 
+struct NodeStepBatchPlan {
+    selected_inbound_link_id: Option<String>,
+    selected_offer_count: usize,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3927,6 +3932,9 @@ impl QueueSimulationState {
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
     ) -> ProcessedNodeStepBatch {
+        let batch_plan = self.plan_node_step_batch(inbound_link_id, to_node_id, ready_to_leave);
+        let _has_selected_inbound = batch_plan.selected_inbound_link_id.is_some();
+        let _selected_offer_count = batch_plan.selected_offer_count;
         let processed_offer =
             self.process_single_node_offer(inbound_link_id, to_node_id, ready_to_leave);
         ProcessedNodeStepBatch {
@@ -3944,6 +3952,51 @@ impl QueueSimulationState {
             self.drain_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
         ProcessedSingleNodeOffer {
             crossing: drained_crossing.crossing,
+        }
+    }
+
+    fn plan_node_step_batch(
+        &self,
+        inbound_link_id: &str,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> NodeStepBatchPlan {
+        let node_step_batch = self.matching_node_step_batch(to_node_id, ready_to_leave);
+        let selected_inbound_link_id = node_step_batch.as_ref().and_then(|batch| {
+            self.node_states
+                .get(to_node_id)
+                .and_then(|queue_node_state| {
+                    queue_node_state
+                        .selector_window_state
+                        .owner_inbound_link_id
+                        .clone()
+                        .or_else(|| Some(inbound_link_id.to_string()))
+                        .filter(|owner_inbound_link_id| {
+                            batch
+                                .offer_snapshot
+                                .offers_by_inbound
+                                .get(owner_inbound_link_id)
+                                .copied()
+                                .unwrap_or(0)
+                                > 0
+                        })
+                })
+        });
+        let selected_offer_count = selected_inbound_link_id
+            .as_ref()
+            .and_then(|selected_inbound_link_id| {
+                node_step_batch.as_ref().and_then(|batch| {
+                    batch
+                        .offer_snapshot
+                        .offers_by_inbound
+                        .get(selected_inbound_link_id)
+                        .copied()
+                })
+            })
+            .unwrap_or(0);
+        NodeStepBatchPlan {
+            selected_inbound_link_id,
+            selected_offer_count,
         }
     }
 }
