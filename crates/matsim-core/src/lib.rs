@@ -3630,7 +3630,17 @@ struct QueueLinkState {
 
 #[derive(Debug, Default)]
 struct NodeFlowState {
+    release_schedule: NodeReleaseSchedule,
+    buffer_state: NodeBufferState,
+}
+
+#[derive(Debug, Default)]
+struct NodeReleaseSchedule {
     next_release_time_s: f64,
+}
+
+#[derive(Debug, Default)]
+struct NodeBufferState {
     pending_releases: VecDeque<f64>,
 }
 
@@ -3664,24 +3674,38 @@ impl QueueLinkState {
 
 impl NodeFlowState {
     fn enter_buffer(&mut self, ready_to_leave_link_s: f64) {
-        self.discard_released(ready_to_leave_link_s);
-        self.next_release_time_s = self.next_release_time_s.max(ready_to_leave_link_s);
+        self.buffer_state.discard_released(ready_to_leave_link_s);
+        self.release_schedule
+            .sync_with_ready_time(ready_to_leave_link_s);
     }
 
     fn release_from_buffer(&mut self, headway_s: f64) -> (f64, usize, usize) {
-        let exit_time_s = self.next_release_time_s;
-        self.next_release_time_s = exit_time_s + headway_s;
-        self.pending_releases.push_back(exit_time_s);
-        let buffer_size_before_release = self.pending_releases.len();
-        self.discard_released(exit_time_s);
-        let buffer_size_after_release = self.pending_releases.len();
+        let exit_time_s = self.release_schedule.reserve_release(headway_s);
+        self.buffer_state.pending_releases.push_back(exit_time_s);
+        let buffer_size_before_release = self.buffer_state.pending_releases.len();
+        self.buffer_state.discard_released(exit_time_s);
+        let buffer_size_after_release = self.buffer_state.pending_releases.len();
         (
             exit_time_s,
             buffer_size_before_release,
             buffer_size_after_release,
         )
     }
+}
 
+impl NodeReleaseSchedule {
+    fn sync_with_ready_time(&mut self, ready_to_leave_link_s: f64) {
+        self.next_release_time_s = self.next_release_time_s.max(ready_to_leave_link_s);
+    }
+
+    fn reserve_release(&mut self, headway_s: f64) -> f64 {
+        let exit_time_s = self.next_release_time_s;
+        self.next_release_time_s = exit_time_s + headway_s;
+        exit_time_s
+    }
+}
+
+impl NodeBufferState {
     fn discard_released(&mut self, time_s: f64) {
         while self
             .pending_releases
