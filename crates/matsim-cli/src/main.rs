@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use matsim_core::{explain_person_reroute, explain_person_score, run_iterations, write_outputs};
+use matsim_core::{explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, write_outputs};
 use matsim_io::load_scenario;
 use thiserror::Error;
 
@@ -33,6 +33,12 @@ enum Command {
         person_id: String,
     },
     ExplainReroute {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        person_id: String,
+    },
+    ExplainPlans {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
@@ -70,6 +76,7 @@ fn run() -> Result<(), CliError> {
         Command::Compare { left, right } => compare_command(&left, &right),
         Command::Explain { config, person_id } => explain_command(&config, &person_id),
         Command::ExplainReroute { config, person_id } => explain_reroute_command(&config, &person_id),
+        Command::ExplainPlans { config, person_id } => explain_plans_command(&config, &person_id),
     }
 }
 
@@ -187,6 +194,29 @@ fn explain_reroute_command(config_path: &Path, person_id: &str) -> Result<(), Cl
         println!("  current_links={}", leg.current_link_ids.join(","));
         println!("  rerouted_nodes={}", leg.rerouted_node_ids.join(","));
         println!("  rerouted_links={}", leg.rerouted_link_ids.join(","));
+    }
+    Ok(())
+}
+
+fn explain_plans_command(config_path: &Path, person_id: &str) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let explanation =
+        explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+
+    println!("person_id={}", explanation.person_id);
+    println!("selected_plan_index={}", explanation.selected_plan_index);
+    println!("plans={}", explanation.plans.len());
+    for plan in explanation.plans {
+        println!(
+            "plan={} selected={} score={} legs={} activities={}",
+            plan.index,
+            plan.selected,
+            plan.score
+                .map(|score| format!("{score:.6}"))
+                .unwrap_or_else(|| "None".to_string()),
+            plan.leg_count,
+            plan.activity_count
+        );
     }
     Ok(())
 }

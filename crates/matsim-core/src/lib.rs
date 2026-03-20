@@ -233,6 +233,22 @@ pub struct PersonRerouteExplanation {
 }
 
 #[derive(Debug, Clone)]
+pub struct PersonPlansExplanation {
+    pub person_id: String,
+    pub selected_plan_index: usize,
+    pub plans: Vec<PlanExplanation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanExplanation {
+    pub index: usize,
+    pub score: Option<f64>,
+    pub selected: bool,
+    pub leg_count: usize,
+    pub activity_count: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct RerouteLegExplanation {
     pub leg_index: usize,
     pub mode: String,
@@ -766,6 +782,36 @@ pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<Pe
     Some(PersonRerouteExplanation {
         person_id: person.id.clone(),
         legs,
+    })
+}
+
+pub fn explain_person_plans(scenario: &Scenario, person_id: &str) -> Option<PersonPlansExplanation> {
+    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    let plans = person
+        .plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| PlanExplanation {
+            index,
+            score: plan.score,
+            selected: index == person.selected_plan_index,
+            leg_count: plan
+                .elements
+                .iter()
+                .filter(|element| matches!(element, PlanElement::Leg(_)))
+                .count(),
+            activity_count: plan
+                .elements
+                .iter()
+                .filter(|element| matches!(element, PlanElement::Activity(_)))
+                .count(),
+        })
+        .collect();
+
+    Some(PersonPlansExplanation {
+        person_id: person.id.clone(),
+        selected_plan_index: person.selected_plan_index,
+        plans,
     })
 }
 
