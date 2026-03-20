@@ -106,6 +106,22 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    InspectReroutes {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        iteration: Option<u32>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 0.0)]
+        min_score_delta: f64,
+        #[arg(long)]
+        csv: bool,
+        #[arg(long)]
+        markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     AnalyzeEvents {
         #[arg(long)]
         config: PathBuf,
@@ -245,6 +261,15 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_network_command(&config, iteration, sort_by, limit, min_delay, csv, markdown, output),
+        Command::InspectReroutes {
+            config,
+            iteration,
+            limit,
+            min_score_delta,
+            csv,
+            markdown,
+            output,
+        } => inspect_reroutes_command(&config, iteration, limit, min_score_delta, csv, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
         Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
@@ -869,6 +894,115 @@ fn inspect_network_command(
         text.push_str(&format!(
             "link_id={} freespeed_tt={:.6} observed_tt={:.6} event_tt={:.6} avg_delay={:.6} traversals={}\n",
             row.0, row.1, row.2, row.3, row.4, row.5
+        ));
+    }
+    emit_text(&text, output)
+}
+
+fn inspect_reroutes_command(
+    config_path: &Path,
+    iteration: Option<u32>,
+    limit: Option<usize>,
+    min_score_delta: f64,
+    csv: bool,
+    markdown: bool,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (run_output, _) = run_iterations_with_state(&scenario);
+    let target_iteration = iteration.unwrap_or(run_output.last_iteration);
+    let selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == target_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: target_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+
+    let delayed_links = selected
+        .observed_link_profiles
+        .iter()
+        .filter(|stat| stat.delay_seconds > 0.0)
+        .map(|stat| stat.link_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut rows = selected
+        .replanning_summary
+        .reroute_details
+        .iter()
+        .map(|detail| {
+            let previous_delay_links = detail
+                .previous_links
+                .split(['|', ','])
+                .filter(|link_id| !link_id.is_empty() && delayed_links.contains(*link_id))
+                .count();
+            let rerouted_delay_links = detail
+                .rerouted_links
+                .split(['|', ','])
+                .filter(|link_id| !link_id.is_empty() && delayed_links.contains(*link_id))
+                .count();
+            (
+                detail.person_id.clone(),
+                detail.previous_score,
+                detail.estimated_rerouted_score,
+                detail.estimated_rerouted_score - detail.previous_score,
+                previous_delay_links,
+                rerouted_delay_links,
+                detail.previous_links.clone(),
+                detail.rerouted_links.clone(),
+            )
+        })
+        .filter(|row| row.3 >= min_score_delta)
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| right.3.total_cmp(&left.3).then_with(|| left.0.cmp(&right.0)));
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    let mut text = String::new();
+    if csv {
+        text.push_str("person_id;previous_score;estimated_rerouted_score;estimated_score_delta;previous_delay_links;rerouted_delay_links;previous_links;rerouted_links\n");
+        for row in rows {
+            text.push_str(&format!(
+                "{};{:.6};{:.6};{:.6};{};{};{};{}\n",
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    if markdown {
+        text.push_str("# Reroute Inspection\n");
+        text.push_str(&format!("\n- iteration: {target_iteration}\n"));
+        text.push_str(&format!("- delayed_links: {}\n", delayed_links.len()));
+        text.push_str(&format!("- min_score_delta: {:.6}\n", min_score_delta));
+        if let Some(limit) = limit {
+            text.push_str(&format!("- limit: {limit}\n"));
+        }
+        text.push_str("\n| person_id | prev_score | rerouted_score | score_delta | prev_delay_links | rerouted_delay_links |\n");
+        text.push_str("|---|---:|---:|---:|---:|---:|\n");
+        for row in rows {
+            text.push_str(&format!(
+                "| {} | {:.6} | {:.6} | {:.6} | {} | {} |\n",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    text.push_str(&format!("iteration={target_iteration}\n"));
+    text.push_str(&format!("delayed_links={}\n", delayed_links.len()));
+    text.push_str(&format!("min_score_delta={min_score_delta:.6}\n"));
+    if let Some(limit) = limit {
+        text.push_str(&format!("limit={limit}\n"));
+    }
+    text.push_str("person_id;previous_score;estimated_rerouted_score;estimated_score_delta;previous_delay_links;rerouted_delay_links;previous_links;rerouted_links\n");
+    for row in rows {
+        text.push_str(&format!(
+            "{};{:.6};{:.6};{:.6};{};{};{};{}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7
         ));
     }
     emit_text(&text, output)
