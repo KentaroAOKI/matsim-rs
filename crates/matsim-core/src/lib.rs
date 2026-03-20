@@ -155,6 +155,7 @@ pub struct IterationOutput {
     pub score_stats: ScoreStats,
     pub plan_memory_stats: PlanMemoryStats,
     pub observed_link_costs: Vec<LinkCostStat>,
+    pub events: Vec<EventRecord>,
     pub replanning_summary: ReplanningSummary,
 }
 
@@ -173,6 +174,7 @@ struct SimulationState {
 struct SimulationSnapshot {
     leg_times: Vec<Vec<f64>>,
     observed_link_costs: BTreeMap<String, f64>,
+    events: Vec<EventRecord>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -217,6 +219,15 @@ pub struct PlanMemoryStats {
 pub struct LinkCostStat {
     pub link_id: String,
     pub travel_time_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRecord {
+    pub time_seconds: f64,
+    pub person_id: String,
+    pub event_type: String,
+    pub link_id: Option<String>,
+    pub leg_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -473,6 +484,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         score_stats,
         plan_memory_stats,
         observed_link_costs,
+        events: simulation.events,
         replanning_summary,
     }
 }
@@ -691,6 +703,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_modestats(&output_dir.join("modestats.csv"), output)?;
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
+    write_events(&output_dir.join("events.csv"), output)?;
     Ok(())
 }
 
@@ -923,6 +936,28 @@ fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), Core
     Ok(())
 }
 
+fn write_events(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;time_seconds;person_id;event_type;link_id;leg_index")
+        .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for event in &iteration.events {
+            writeln!(
+                writer,
+                "{};{:.6};{};{};{};{}",
+                iteration.iteration,
+                event.time_seconds,
+                event.person_id,
+                event.event_type,
+                event.link_id.as_deref().unwrap_or(""),
+                event.leg_index
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
 fn csv_writer(path: &Path) -> Result<BufWriter<File>, CoreError> {
     let file = File::create(path).map_err(|source| write_error(path, source))?;
     Ok(BufWriter::new(file))
@@ -977,6 +1012,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         .collect::<Vec<_>>();
     let mut observed_link_sums = BTreeMap::<String, f64>::new();
     let mut observed_link_counts = BTreeMap::<String, usize>::new();
+    let mut events = Vec::<EventRecord>::new();
 
     let mut pending = BinaryHeap::new();
     for (person_index, person) in population.persons.iter().enumerate() {
@@ -1001,12 +1037,28 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         let previous_activity = previous_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
         let next_activity = next_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
         let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
+        let leg_order = leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
+
+        events.push(EventRecord {
+            time_seconds: pending_leg.departure_time_s,
+            person_id: person.id.clone(),
+            event_type: "departure".to_string(),
+            link_id: previous_activity.and_then(|activity| activity.link_id.clone()),
+            leg_index: leg_order,
+        });
 
         let mut current_time_s = pending_leg.departure_time_s;
         for link_id in route_links {
             let Some(link) = network.links.get(link_id) else {
                 continue;
             };
+            events.push(EventRecord {
+                time_seconds: current_time_s,
+                person_id: person.id.clone(),
+                event_type: "link_enter".to_string(),
+                link_id: Some(link_id.to_string()),
+                leg_index: leg_order,
+            });
             let free_speed_exit_s = current_time_s + link.length_m / link.freespeed_mps;
             let queue_exit_s = next_link_exit_time_s.get(link_id).copied().unwrap_or(0.0);
             let exit_time_s = free_speed_exit_s.max(queue_exit_s);
@@ -1023,10 +1075,16 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         }
 
         let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
-        let leg_order = leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
         if let Some(slot) = travel_times[pending_leg.person_index].get_mut(leg_order) {
             *slot = travel_time_s;
         }
+        events.push(EventRecord {
+            time_seconds: pending_leg.departure_time_s + travel_time_s,
+            person_id: person.id.clone(),
+            event_type: "arrival".to_string(),
+            link_id: next_activity.and_then(|activity| activity.link_id.clone()),
+            leg_index: leg_order,
+        });
 
         if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
             &person.selected_plan(),
@@ -1059,6 +1117,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
     SimulationSnapshot {
         leg_times: travel_times,
         observed_link_costs,
+        events,
     }
 }
 
