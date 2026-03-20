@@ -735,64 +735,74 @@ pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<Pers
 }
 
 pub fn analyze_events(output: &RunOutput) -> Vec<EventAnalysis> {
-    output
+    let grouped = output
         .iterations
         .iter()
-        .map(|iteration| {
-            let mut departures = BTreeMap::<(&str, usize), f64>::new();
-            let mut activity_starts = BTreeMap::<(&str, usize), f64>::new();
-            let mut leg_travel_times = Vec::<f64>::new();
-            let mut activity_durations = Vec::<f64>::new();
-            let mut departure_count = 0usize;
-            let mut arrival_count = 0usize;
-            let mut activity_start_count = 0usize;
-            let mut activity_end_count = 0usize;
+        .map(|iteration| (iteration.iteration, iteration.events.clone()))
+        .collect::<Vec<_>>();
+    analyze_event_groups(&grouped)
+}
 
-            for event in &iteration.events {
-                match event.event_type.as_str() {
-                    "departure" => {
-                        departures.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
-                        departure_count += 1;
-                    }
-                    "arrival" => {
-                        if let Some(departure_time) = departures.remove(&(event.person_id.as_str(), event.leg_index)) {
-                            leg_travel_times.push((event.time_seconds - departure_time).max(0.0));
-                        }
-                        arrival_count += 1;
-                    }
-                    event_type if event_type.starts_with("act_start:") => {
-                        activity_starts.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
-                        activity_start_count += 1;
-                    }
-                    event_type if event_type.starts_with("act_end:") => {
-                        if let Some(start_time) = activity_starts.remove(&(event.person_id.as_str(), event.leg_index)) {
-                            activity_durations.push((event.time_seconds - start_time).max(0.0));
-                        }
-                        activity_end_count += 1;
-                    }
-                    _ => {}
-                }
-            }
-
-            EventAnalysis {
-                iteration: iteration.iteration,
-                avg_leg_travel_time_seconds: if leg_travel_times.is_empty() {
-                    0.0
-                } else {
-                    leg_travel_times.iter().sum::<f64>() / leg_travel_times.len() as f64
-                },
-                avg_activity_duration_seconds: if activity_durations.is_empty() {
-                    0.0
-                } else {
-                    activity_durations.iter().sum::<f64>() / activity_durations.len() as f64
-                },
-                departures: departure_count,
-                arrivals: arrival_count,
-                activity_starts: activity_start_count,
-                activity_ends: activity_end_count,
-            }
-        })
+pub fn analyze_event_groups(grouped_events: &[(u32, Vec<EventRecord>)]) -> Vec<EventAnalysis> {
+    grouped_events
+        .iter()
+        .map(|(iteration, events)| analyze_event_records(*iteration, events))
         .collect()
+}
+
+fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysis {
+    let mut departures = BTreeMap::<(&str, usize), f64>::new();
+    let mut activity_starts = BTreeMap::<(&str, usize), f64>::new();
+    let mut leg_travel_times = Vec::<f64>::new();
+    let mut activity_durations = Vec::<f64>::new();
+    let mut departure_count = 0usize;
+    let mut arrival_count = 0usize;
+    let mut activity_start_count = 0usize;
+    let mut activity_end_count = 0usize;
+
+    for event in events {
+        match event.event_type.as_str() {
+            "departure" => {
+                departures.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
+                departure_count += 1;
+            }
+            "arrival" => {
+                if let Some(departure_time) = departures.remove(&(event.person_id.as_str(), event.leg_index)) {
+                    leg_travel_times.push((event.time_seconds - departure_time).max(0.0));
+                }
+                arrival_count += 1;
+            }
+            event_type if event_type.starts_with("act_start:") => {
+                activity_starts.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
+                activity_start_count += 1;
+            }
+            event_type if event_type.starts_with("act_end:") => {
+                if let Some(start_time) = activity_starts.remove(&(event.person_id.as_str(), event.leg_index)) {
+                    activity_durations.push((event.time_seconds - start_time).max(0.0));
+                }
+                activity_end_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    EventAnalysis {
+        iteration,
+        avg_leg_travel_time_seconds: if leg_travel_times.is_empty() {
+            0.0
+        } else {
+            leg_travel_times.iter().sum::<f64>() / leg_travel_times.len() as f64
+        },
+        avg_activity_duration_seconds: if activity_durations.is_empty() {
+            0.0
+        } else {
+            activity_durations.iter().sum::<f64>() / activity_durations.len() as f64
+        },
+        departures: departure_count,
+        arrivals: arrival_count,
+        activity_starts: activity_start_count,
+        activity_ends: activity_end_count,
+    }
 }
 
 pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<PersonRerouteExplanation> {

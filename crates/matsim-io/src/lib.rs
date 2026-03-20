@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use matsim_core::{
-    Activity, ActivityScoringParameters, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
+    Activity, ActivityScoringParameters, EventRecord, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
     Population, Scenario, ScoringConfig, ModeScoringParameters, ReplanningConfig, StrategySetting,
 };
 use quick_xml::events::{BytesStart, Event};
@@ -507,6 +507,52 @@ pub fn write_population(path: &Path, population: &Population) -> Result<(), IoEr
         source,
     })?;
     Ok(())
+}
+
+pub fn load_events(path: &Path) -> Result<Vec<(u32, Vec<EventRecord>)>, IoError> {
+    let text = std::fs::read_to_string(path).map_err(|source| IoError::OpenFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut grouped = std::collections::BTreeMap::<u32, Vec<EventRecord>>::new();
+
+    for line in text.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts = line.splitn(6, ';').collect::<Vec<_>>();
+        if parts.len() != 6 {
+            return Err(IoError::InvalidFloat {
+                path: path.display().to_string(),
+                value: line.to_string(),
+            });
+        }
+        let iteration = parts[0].parse::<u32>().map_err(|_| IoError::InvalidFloat {
+            path: path.display().to_string(),
+            value: parts[0].to_string(),
+        })?;
+        let time_seconds = parts[1].parse::<f64>().map_err(|_| IoError::InvalidFloat {
+            path: path.display().to_string(),
+            value: parts[1].to_string(),
+        })?;
+        let leg_index = parts[5].parse::<usize>().map_err(|_| IoError::InvalidFloat {
+            path: path.display().to_string(),
+            value: parts[5].to_string(),
+        })?;
+        grouped.entry(iteration).or_default().push(EventRecord {
+            time_seconds,
+            person_id: parts[2].to_string(),
+            event_type: parts[3].to_string(),
+            link_id: if parts[4].is_empty() {
+                None
+            } else {
+                Some(parts[4].to_string())
+            },
+            leg_index,
+        });
+    }
+
+    Ok(grouped.into_iter().collect())
 }
 
 fn parse_activity(path: &Path, e: &BytesStart<'_>) -> Result<Activity, IoError> {

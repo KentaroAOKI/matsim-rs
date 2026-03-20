@@ -4,10 +4,11 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
-    analyze_events, explain_person_plans, explain_person_reroute, explain_person_score, run_iterations_with_state,
+    analyze_event_groups, analyze_events, explain_person_plans, explain_person_reroute, explain_person_score,
+    run_iterations_with_state,
     write_outputs,
 };
-use matsim_io::{load_scenario, write_population};
+use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
 
 #[derive(Debug, Parser)]
@@ -83,6 +84,10 @@ enum Command {
     AnalyzeEvents {
         #[arg(long)]
         config: PathBuf,
+    },
+    AnalyzeEventsFile {
+        #[arg(long)]
+        events: PathBuf,
     },
 }
 
@@ -167,6 +172,7 @@ fn run() -> Result<(), CliError> {
             output,
         } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
+        Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
     }
 }
 
@@ -208,6 +214,26 @@ fn analyze_events_command(config_path: &Path) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
     let (output, _) = run_iterations_with_state(&scenario);
     let analyses = analyze_events(&output);
+
+    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends");
+    for analysis in analyses {
+        println!(
+            "{};{:.6};{:.6};{};{};{};{}",
+            analysis.iteration,
+            analysis.avg_leg_travel_time_seconds,
+            analysis.avg_activity_duration_seconds,
+            analysis.departures,
+            analysis.arrivals,
+            analysis.activity_starts,
+            analysis.activity_ends
+        );
+    }
+    Ok(())
+}
+
+fn analyze_events_file_command(events_path: &Path) -> Result<(), CliError> {
+    let grouped = load_events(events_path)?;
+    let analyses = analyze_event_groups(&grouped);
 
     println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends");
     for analysis in analyses {
