@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use matsim_core::{
-    Activity, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement, Population, Scenario,
+    Activity, ActivityScoringParameters, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
+    Population, Scenario, ScoringConfig,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -65,7 +66,10 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
     let mut plans_path: Option<String> = None;
     let mut output_directory: Option<String> = None;
     let mut last_iteration = 0_u32;
-    let mut performing_utils_per_hour = 0.0_f64;
+    let mut scoring = ScoringConfig::default();
+    let mut current_paramset_type: Option<String> = None;
+    let mut current_activity_params = ActivityScoringParameters::default();
+    let mut current_activity_type: Option<String> = None;
 
     loop {
         match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
@@ -75,8 +79,23 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
             Event::Start(ref e) if e.name().as_ref() == b"module" => {
                 current_module = attr_string(path, e, b"name")?;
             }
+            Event::Start(ref e) if e.name().as_ref() == b"parameterset" => {
+                current_paramset_type = attr_string(path, e, b"type")?;
+                if current_paramset_type.as_deref() == Some("activityParams") {
+                    current_activity_params = ActivityScoringParameters::default();
+                    current_activity_type = None;
+                }
+            }
             Event::End(ref e) if e.name().as_ref() == b"module" => {
                 current_module = None;
+            }
+            Event::End(ref e) if e.name().as_ref() == b"parameterset" => {
+                if current_paramset_type.as_deref() == Some("activityParams") {
+                    if let Some(activity_type) = current_activity_type.take() {
+                        scoring.activity_params.insert(activity_type, current_activity_params.clone());
+                    }
+                }
+                current_paramset_type = None;
             }
             Event::Empty(ref e) if e.name().as_ref() == b"param" => {
                 let name = attr_string(path, e, b"name")?.unwrap_or_default();
@@ -85,16 +104,46 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     Some("global") if name == "randomSeed" => {
                         random_seed = value.parse::<u64>().ok();
                     }
-                    Some("network") if name == "inputNetworkFile" => network_path = Some(value),
-                    Some("plans") if name == "inputPlansFile" => plans_path = Some(value),
-                    Some("controller") if name == "outputDirectory" => output_directory = Some(value),
+                    Some("network") if name == "inputNetworkFile" => network_path = Some(value.clone()),
+                    Some("plans") if name == "inputPlansFile" => plans_path = Some(value.clone()),
+                    Some("controller") if name == "outputDirectory" => output_directory = Some(value.clone()),
                     Some("controller") if name == "lastIteration" => {
                         last_iteration = value.parse::<u32>().unwrap_or(0);
                     }
                     Some("scoring") if name == "performing" => {
-                        performing_utils_per_hour = parse_scoring_value(path, &value)?;
+                        scoring.performing_utils_per_hour = parse_scoring_value(path, &value)?;
+                    }
+                    Some("scoring") if name == "lateArrival" => {
+                        scoring.late_arrival_utils_per_hour = parse_scoring_value(path, &value)?;
                     }
                     _ => {}
+                }
+
+                if current_module.as_deref() == Some("scoring")
+                    && current_paramset_type.as_deref() == Some("activityParams")
+                {
+                    match name.as_str() {
+                        "activityType" => current_activity_type = Some(value),
+                        "typicalDuration" => {
+                            current_activity_params.typical_duration_seconds = parse_time(&value)?;
+                        }
+                        "openingTime" => {
+                            current_activity_params.opening_time_seconds = Some(parse_time(&value)?);
+                        }
+                        "closingTime" => {
+                            current_activity_params.closing_time_seconds = Some(parse_time(&value)?);
+                        }
+                        "latestStartTime" => {
+                            current_activity_params.latest_start_time_seconds = Some(parse_time(&value)?);
+                        }
+                        "earliestEndTime" => {
+                            current_activity_params.earliest_end_time_seconds = Some(parse_time(&value)?);
+                        }
+                        "minimalDuration" => {
+                            current_activity_params.minimal_duration_seconds = Some(parse_time(&value)?);
+                        }
+                        _ => {}
+                    }
                 }
             }
             Event::Eof => break,
@@ -109,7 +158,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
         plans_path: plans_path.ok_or(IoError::MissingConfig("plans.inputPlansFile"))?,
         output_directory: output_directory.unwrap_or_else(|| "./output-rust".to_string()),
         last_iteration,
-        performing_utils_per_hour,
+        scoring,
     })
 }
 

@@ -10,7 +10,24 @@ pub struct MatsimConfig {
     pub plans_path: String,
     pub output_directory: String,
     pub last_iteration: u32,
+    pub scoring: ScoringConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScoringConfig {
     pub performing_utils_per_hour: f64,
+    pub late_arrival_utils_per_hour: f64,
+    pub activity_params: BTreeMap<String, ActivityScoringParameters>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ActivityScoringParameters {
+    pub typical_duration_seconds: f64,
+    pub opening_time_seconds: Option<f64>,
+    pub closing_time_seconds: Option<f64>,
+    pub latest_start_time_seconds: Option<f64>,
+    pub earliest_end_time_seconds: Option<f64>,
+    pub minimal_duration_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +146,12 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
         for element in &person.selected_plan.elements {
             match element {
                 PlanElement::Activity(activity) => {
-                    total_score += score_activity(activity, scenario.config.performing_utils_per_hour);
+                    total_score += score_activity(
+                        activity,
+                        &scenario.config.scoring,
+                        last_activity.map(|_| 0.0).unwrap_or(0.0),
+                        None,
+                    );
                     last_activity = Some(activity);
                 }
                 PlanElement::Leg(leg) => {
@@ -148,6 +170,13 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
 
     let person_count = scenario.population.persons.len() as f64;
     let leg_count = total_legs as f64;
+    total_score = scenario
+        .population
+        .persons
+        .iter()
+        .map(|person| score_plan(&person.selected_plan, &scenario.config.scoring))
+        .sum();
+
     let score_avg = if person_count > 0.0 { total_score / person_count } else { 0.0 };
 
     let mode_stats = mode_counts
@@ -320,9 +349,128 @@ fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity
     distance_m
 }
 
-fn score_activity(activity: &Activity, performing_utils_per_hour: f64) -> f64 {
-    let duration_seconds = activity.duration_seconds.or(activity.end_time_seconds).unwrap_or(0.0);
-    (duration_seconds / 3600.0) * performing_utils_per_hour
+fn score_plan(plan: &Plan, scoring: &ScoringConfig) -> f64 {
+    let activities: Vec<&Activity> = plan
+        .elements
+        .iter()
+        .filter_map(|element| match element {
+            PlanElement::Activity(activity) => Some(activity),
+            _ => None,
+        })
+        .collect();
+    if activities.is_empty() {
+        return 0.0;
+    }
+
+    let mut score = 0.0_f64;
+    let mut current_time = 0.0_f64;
+    let mut activity_windows: Vec<(usize, f64, f64)> = Vec::with_capacity(activities.len());
+
+    for (index, activity) in activities.iter().enumerate() {
+        let start = current_time;
+        let end = if let Some(end_time) = activity.end_time_seconds {
+            end_time
+        } else if let Some(duration) = activity.duration_seconds {
+            start + duration
+        } else if index == activities.len() - 1 {
+            24.0 * 3600.0
+        } else {
+            start
+        };
+        activity_windows.push((index, start, end));
+        current_time = end;
+    }
+
+    if activities.len() >= 2 && activities.first().map(|a| a.activity_type.as_str()) == activities.last().map(|a| a.activity_type.as_str()) {
+        let last = activities.last().unwrap();
+        let (_, _, first_end) = activity_windows[0];
+        let (_, last_start, _) = activity_windows[activity_windows.len() - 1];
+        score += score_activity(last, scoring, last_start, Some(first_end + 24.0 * 3600.0));
+        for (index, start, end) in activity_windows.iter().copied().skip(1).take(activity_windows.len().saturating_sub(2)) {
+            score += score_activity(activities[index], scoring, start, Some(end));
+        }
+        return score;
+    }
+
+    for (index, start, end) in activity_windows {
+        score += score_activity(activities[index], scoring, start, Some(end));
+    }
+    score
+}
+
+fn score_activity(
+    activity: &Activity,
+    scoring: &ScoringConfig,
+    arrival_time: f64,
+    departure_time: Option<f64>,
+) -> f64 {
+    let Some(params) = scoring.activity_params.get(&activity.activity_type) else {
+        return 0.0;
+    };
+    let departure_time = departure_time.unwrap_or(arrival_time);
+
+    let mut activity_start = arrival_time;
+    let mut activity_end = departure_time;
+
+    if let Some(opening) = params.opening_time_seconds {
+        if arrival_time < opening {
+            activity_start = opening;
+        }
+    }
+    if let Some(closing) = params.closing_time_seconds {
+        if closing < departure_time {
+            activity_end = closing;
+        }
+    }
+    if let (Some(opening), Some(closing)) = (params.opening_time_seconds, params.closing_time_seconds) {
+        if opening > departure_time || closing < arrival_time {
+            activity_start = departure_time;
+            activity_end = departure_time;
+        }
+    }
+
+    let duration = (activity_end - activity_start).max(0.0);
+    let mut score = 0.0_f64;
+    let marginal_utility_of_performing_s = scoring.performing_utils_per_hour / 3600.0;
+    let marginal_utility_of_waiting_s = 0.0;
+    let marginal_utility_of_late_arrival_s = scoring.late_arrival_utils_per_hour / 3600.0;
+
+    if arrival_time < activity_start {
+        score += marginal_utility_of_waiting_s * (activity_start - arrival_time);
+    }
+    if let Some(latest_start) = params.latest_start_time_seconds {
+        if activity_start > latest_start {
+            score += marginal_utility_of_late_arrival_s * (activity_start - latest_start);
+        }
+    }
+
+    if params.typical_duration_seconds > 0.0 {
+        let zero_utility_duration_h =
+            (params.typical_duration_seconds * (-1.0_f64).exp()) / 3600.0;
+        let zero_utility_duration_s = zero_utility_duration_h * 3600.0;
+        if duration >= zero_utility_duration_s {
+            score += marginal_utility_of_performing_s
+                * params.typical_duration_seconds
+                * ((duration / 3600.0) / zero_utility_duration_h).ln();
+        } else {
+            let slope_at_zero =
+                marginal_utility_of_performing_s * params.typical_duration_seconds / zero_utility_duration_s;
+            score -= slope_at_zero * (zero_utility_duration_s - duration);
+        }
+    }
+
+    if let Some(earliest_end) = params.earliest_end_time_seconds {
+        if activity_end < earliest_end {
+            score += marginal_utility_of_late_arrival_s * (earliest_end - activity_end);
+        }
+    }
+    if let Some(minimal_duration) = params.minimal_duration_seconds {
+        if duration < minimal_duration {
+            score += marginal_utility_of_late_arrival_s * (minimal_duration - duration);
+        }
+    }
+
+    score
 }
 
 #[cfg(test)]
