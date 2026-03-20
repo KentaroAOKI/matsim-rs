@@ -3388,6 +3388,7 @@ struct NodeCrossingResult {
 }
 
 struct NodeCrossingDecision {
+    sim_step: i64,
     selected_inbound_link_id: Option<String>,
 }
 
@@ -3506,7 +3507,7 @@ fn simulate_link_traversal(
         .or_default();
     queue_node_state.register_inbound_link(link_id);
     let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
-    let decision = queue_node_state.prepare_crossing(link_id);
+    let decision = queue_node_state.prepare_crossing(link_id, &ready_to_leave);
     let crossing = queue_link_state.cross_node(&ready_to_leave, &decision);
     queue_node_state.finish_crossing(decision);
     SimulatedLinkTraversal {
@@ -3652,6 +3653,7 @@ struct QueueSimulationState {
 struct QueueNodeState {
     offering_buffer_state: NodeOfferingBufferState,
     selector_state: NodeSelectorState,
+    selector_window_state: NodeSelectorWindowState,
 }
 
 #[derive(Debug, Default)]
@@ -3678,6 +3680,12 @@ struct NodeOfferingBufferState {
 #[derive(Debug, Default)]
 struct NodeSelectorState {
     selected_inbound_link_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct NodeSelectorWindowState {
+    sim_step: Option<i64>,
+    owner_inbound_link_id: Option<String>,
 }
 
 impl QueueLinkState {
@@ -3719,12 +3727,21 @@ impl QueueNodeState {
             .register_inbound_link(link_id, &self.offering_buffer_state);
     }
 
-    fn prepare_crossing(&mut self, default_inbound_link_id: &str) -> NodeCrossingDecision {
-        self.selector_state
-            .select_inbound_link(default_inbound_link_id, &self.offering_buffer_state)
+    fn prepare_crossing(
+        &mut self,
+        default_inbound_link_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> NodeCrossingDecision {
+        self.selector_state.select_inbound_link(
+            default_inbound_link_id,
+            ready_to_leave.free_speed_exit_s.floor() as i64,
+            &self.offering_buffer_state,
+            &mut self.selector_window_state,
+        )
     }
 
     fn finish_crossing(&mut self, decision: NodeCrossingDecision) {
+        self.selector_window_state.sim_step = Some(decision.sim_step);
         self.offering_buffer_state.note_ready_vehicle();
         self.selector_state
             .refresh_after_crossing(decision, &self.offering_buffer_state);
@@ -3814,14 +3831,20 @@ impl NodeSelectorState {
     fn select_inbound_link(
         &mut self,
         default_inbound_link_id: &str,
+        sim_step: i64,
         offering_buffer_state: &NodeOfferingBufferState,
+        selector_window_state: &mut NodeSelectorWindowState,
     ) -> NodeCrossingDecision {
         self.refresh_selected_inbound(offering_buffer_state);
+        let selected_inbound_link_id = selector_window_state.select_owner(
+            sim_step,
+            self.selected_inbound_link_id
+                .as_deref()
+                .unwrap_or(default_inbound_link_id),
+        );
         NodeCrossingDecision {
-            selected_inbound_link_id: self
-                .selected_inbound_link_id
-                .clone()
-                .or_else(|| Some(default_inbound_link_id.to_string())),
+            sim_step,
+            selected_inbound_link_id: Some(selected_inbound_link_id),
         }
     }
 
@@ -3848,6 +3871,18 @@ impl NodeSelectorState {
             self.selected_inbound_link_id =
                 offering_buffer_state.pending_inbound_links.front().cloned();
         }
+    }
+}
+
+impl NodeSelectorWindowState {
+    fn select_owner(&mut self, sim_step: i64, fallback_inbound_link_id: &str) -> String {
+        if self.sim_step != Some(sim_step) {
+            self.sim_step = Some(sim_step);
+            self.owner_inbound_link_id = Some(fallback_inbound_link_id.to_string());
+        }
+        self.owner_inbound_link_id
+            .clone()
+            .unwrap_or_else(|| fallback_inbound_link_id.to_string())
     }
 }
 
