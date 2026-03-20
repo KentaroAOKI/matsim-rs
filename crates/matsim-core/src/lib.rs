@@ -3447,6 +3447,11 @@ struct PreparedBatchExecution {
     ready_to_leave: LinkReadyToLeave,
 }
 
+struct PreparedFollowupCrossing {
+    prepared_crossing: PreparedNodeCrossing,
+    ready_to_leave: LinkReadyToLeave,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3957,17 +3962,34 @@ impl QueueSimulationState {
         to_node_id: &str,
         prepared_execution: PreparedBatchExecution,
     ) -> ProcessedSingleNodeOffer {
-        let _selected_inbound_link_id = prepared_execution
+        let selected_inbound_link_id = prepared_execution
             .batch_plan
             .selected_inbound_link_id
             .clone();
-        let _selected_offer_count = prepared_execution.batch_plan.selected_offer_count;
+        let selected_offer_count = prepared_execution.batch_plan.selected_offer_count;
         let drained_crossing = self.drain_prepared_node_crossing(
             inbound_link_id,
             to_node_id,
             &prepared_execution.ready_to_leave,
             prepared_execution.prepared_crossing,
         );
+        if let Some(selected_inbound_link_id) = selected_inbound_link_id {
+            for _ in 1..selected_offer_count {
+                let Some(followup_crossing) = self.prepare_followup_crossing(
+                    &selected_inbound_link_id,
+                    to_node_id,
+                    &prepared_execution.ready_to_leave,
+                ) else {
+                    break;
+                };
+                let _ = self.drain_prepared_node_crossing(
+                    &selected_inbound_link_id,
+                    to_node_id,
+                    &followup_crossing.ready_to_leave,
+                    followup_crossing.prepared_crossing,
+                );
+            }
+        }
         ProcessedSingleNodeOffer {
             crossing: drained_crossing.crossing,
         }
@@ -4035,6 +4057,24 @@ impl QueueSimulationState {
                 headway_s: ready_to_leave.headway_s,
             },
         }
+    }
+
+    fn prepare_followup_crossing(
+        &mut self,
+        inbound_link_id: &str,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> Option<PreparedFollowupCrossing> {
+        let prepared_crossing =
+            self.prepare_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
+        prepared_crossing.pending_offer.as_ref()?;
+        Some(PreparedFollowupCrossing {
+            prepared_crossing,
+            ready_to_leave: LinkReadyToLeave {
+                free_speed_exit_s: ready_to_leave.free_speed_exit_s,
+                headway_s: ready_to_leave.headway_s,
+            },
+        })
     }
 }
 
