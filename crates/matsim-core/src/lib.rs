@@ -3368,6 +3368,14 @@ struct SimulatedLeg {
     arrival_time_s: f64,
 }
 
+struct SimulatedLinkTraversal {
+    exit_time_s: f64,
+    free_speed_exit_s: f64,
+    headway_s: f64,
+    buffer_size_before_release: usize,
+    buffer_size_after_release: usize,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3419,35 +3427,26 @@ fn simulate_pending_leg(
             link_id: Some(link_id.to_string()),
             leg_index: leg_order,
         });
-        let headway_s =
-            if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
-                3600.0 / link.capacity_veh_per_hour
-            } else {
-                0.0
-            };
-        let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
-        let free_speed_exit_s = queue_link_state.ready_to_leave_link(current_time_s, link);
-        let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
-            queue_link_state.cross_node(free_speed_exit_s, headway_s);
+        let traversal = simulate_link_traversal(queue_link_states, link_id, link, current_time_s);
         observation_state.record_link_traversal(
             &person.id,
             leg_order,
             link_id,
             current_time_s,
-            free_speed_exit_s,
-            exit_time_s,
-            headway_s,
-            buffer_size_before_release,
-            buffer_size_after_release,
+            traversal.free_speed_exit_s,
+            traversal.exit_time_s,
+            traversal.headway_s,
+            traversal.buffer_size_before_release,
+            traversal.buffer_size_after_release,
         );
         events.push(EventRecord {
-            time_seconds: exit_time_s,
+            time_seconds: traversal.exit_time_s,
             person_id: person.id.clone(),
             event_type: "link_leave".to_string(),
             link_id: Some(link_id.to_string()),
             leg_index: leg_order,
         });
-        current_time_s = exit_time_s;
+        current_time_s = traversal.exit_time_s;
     }
 
     let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
@@ -3474,6 +3473,30 @@ fn simulate_pending_leg(
         travel_time_s,
         arrival_time_s,
     })
+}
+
+fn simulate_link_traversal(
+    queue_link_states: &mut BTreeMap<String, QueueLinkState>,
+    link_id: &str,
+    link: &Link,
+    enter_time_s: f64,
+) -> SimulatedLinkTraversal {
+    let headway_s = if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
+        3600.0 / link.capacity_veh_per_hour
+    } else {
+        0.0
+    };
+    let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
+    let free_speed_exit_s = queue_link_state.ready_to_leave_link(enter_time_s, link);
+    let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
+        queue_link_state.cross_node(free_speed_exit_s, headway_s);
+    SimulatedLinkTraversal {
+        exit_time_s,
+        free_speed_exit_s,
+        headway_s,
+        buffer_size_before_release,
+        buffer_size_after_release,
+    }
 }
 
 fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
