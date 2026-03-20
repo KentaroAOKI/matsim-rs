@@ -165,6 +165,7 @@ pub struct IterationOutput {
     pub plan_memory_stats: PlanMemoryStats,
     pub observed_link_costs: Vec<LinkCostStat>,
     pub observed_link_profiles: Vec<LinkProfileStat>,
+    pub link_traversals: Vec<LinkTraversalStat>,
     pub events: Vec<EventRecord>,
     pub replanning_summary: ReplanningSummary,
 }
@@ -228,6 +229,7 @@ struct SimulationSnapshot {
     leg_times: Vec<Vec<f64>>,
     observed_link_costs: BTreeMap<String, f64>,
     observed_link_time_profiles: BTreeMap<String, BTreeMap<u32, f64>>,
+    link_traversals: Vec<LinkTraversalStat>,
     events: Vec<EventRecord>,
 }
 
@@ -281,6 +283,17 @@ pub struct LinkProfileStat {
     pub hour_bucket: u32,
     pub travel_time_seconds: f64,
     pub delay_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkTraversalStat {
+    pub person_id: String,
+    pub leg_index: usize,
+    pub link_id: String,
+    pub enter_time_seconds: f64,
+    pub free_speed_exit_time_seconds: f64,
+    pub queue_exit_time_seconds: f64,
+    pub headway_seconds: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -609,6 +622,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         plan_memory_stats,
         observed_link_costs,
         observed_link_profiles,
+        link_traversals: simulation.link_traversals,
         events: simulation.events,
         replanning_summary,
     }
@@ -1112,6 +1126,8 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
     write_observed_link_profiles(&output_dir.join("observed_link_profiles.csv"), output)?;
+    write_link_traversals(&output_dir.join("link_traversals.csv"), output)?;
+    write_queue_delaystats(&output_dir.join("queue_delaystats.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
@@ -1576,6 +1592,72 @@ fn write_observed_link_profiles(path: &Path, output: &RunOutput) -> Result<(), C
     Ok(())
 }
 
+fn write_link_traversals(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;person_id;leg_index;link_id;enter_time_seconds;free_speed_exit_time_seconds;queue_exit_time_seconds;queue_delay_seconds;headway_seconds"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for traversal in &iteration.link_traversals {
+            writeln!(
+                writer,
+                "{};{};{};{};{:.6};{:.6};{:.6};{:.6};{:.6}",
+                iteration.iteration,
+                traversal.person_id,
+                traversal.leg_index,
+                traversal.link_id,
+                traversal.enter_time_seconds,
+                traversal.free_speed_exit_time_seconds,
+                traversal.queue_exit_time_seconds,
+                (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds).max(0.0),
+                traversal.headway_seconds
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_queue_delaystats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;link_id;total_queue_delay_seconds;avg_queue_delay_seconds;max_queue_delay_seconds;traversals"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        let mut aggregates = BTreeMap::<String, (f64, f64, usize)>::new();
+        for traversal in &iteration.link_traversals {
+            let delay_s =
+                (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds).max(0.0);
+            let entry = aggregates.entry(traversal.link_id.clone()).or_insert((0.0, 0.0, 0));
+            entry.0 += delay_s;
+            entry.1 = entry.1.max(delay_s);
+            entry.2 += 1;
+        }
+        for (link_id, (total_delay, max_delay, traversals)) in aggregates {
+            writeln!(
+                writer,
+                "{};{};{:.6};{:.6};{:.6};{}",
+                iteration.iteration,
+                link_id,
+                total_delay,
+                if traversals > 0 {
+                    total_delay / traversals as f64
+                } else {
+                    0.0
+                },
+                max_delay,
+                traversals
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
 fn write_events(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
     writeln!(writer, "iteration;time_seconds;person_id;event_type;link_id;leg_index")
@@ -1853,6 +1935,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
     let mut observed_link_counts = BTreeMap::<String, usize>::new();
     let mut observed_link_profile_sums = BTreeMap::<String, BTreeMap<u32, f64>>::new();
     let mut observed_link_profile_counts = BTreeMap::<String, BTreeMap<u32, usize>>::new();
+    let mut link_traversals = Vec::<LinkTraversalStat>::new();
     let mut events = Vec::<EventRecord>::new();
 
     let mut pending = BinaryHeap::new();
@@ -1918,6 +2001,15 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 0.0
             };
             let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
+            link_traversals.push(LinkTraversalStat {
+                person_id: person.id.clone(),
+                leg_index: leg_order,
+                link_id: link_id.to_string(),
+                enter_time_seconds: current_time_s,
+                free_speed_exit_time_seconds: free_speed_exit_s,
+                queue_exit_time_seconds: exit_time_s,
+                headway_seconds: headway_s,
+            });
             *observed_link_sums.entry(link_id.to_string()).or_default() += observed_travel_time_s;
             *observed_link_counts.entry(link_id.to_string()).or_default() += 1;
             let bucket = (current_time_s / 3600.0).floor().max(0.0) as u32;
@@ -2012,6 +2104,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         leg_times: travel_times,
         observed_link_costs,
         observed_link_time_profiles,
+        link_traversals,
         events,
     }
 }
