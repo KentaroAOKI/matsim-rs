@@ -715,6 +715,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
+    write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     Ok(())
 }
 
@@ -1036,6 +1037,30 @@ fn write_events(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
             )
             .map_err(|source| write_error(path, source))?;
         }
+    }
+    Ok(())
+}
+
+fn write_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for analysis in analyze_events(output) {
+        writeln!(
+            writer,
+            "{};{:.6};{:.6};{};{};{};{}",
+            analysis.iteration,
+            analysis.avg_leg_travel_time_seconds,
+            analysis.avg_activity_duration_seconds,
+            analysis.departures,
+            analysis.arrivals,
+            analysis.activity_starts,
+            analysis.activity_ends
+        )
+        .map_err(|source| write_error(path, source))?;
     }
     Ok(())
 }

@@ -678,6 +678,7 @@ mod tests {
     use matsim_core::{
         explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, run_iterations_with_state,
     };
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -948,5 +949,32 @@ mod tests {
         assert_eq!(written.persons[0].selected_plan_index, 0);
         assert_eq!(written.persons[0].plans[0].score, Some(1.0));
         assert_eq!(written.persons[0].plans[1].score, Some(500.0));
+    }
+
+    #[test]
+    fn loads_events_csv_grouped_by_iteration() {
+        let path = PathBuf::from("/tmp/matsim-rs-events.csv");
+        fs::write(
+            &path,
+            concat!(
+                "iteration;time_seconds;person_id;event_type;link_id;leg_index\n",
+                "0;1.500000;alice;departure;start;0\n",
+                "0;3.000000;alice;arrival;end;0\n",
+                "1;5.000000;bob;act_start:w;;1\n",
+            ),
+        )
+        .unwrap();
+
+        let grouped = load_events(&path).unwrap();
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, 0);
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[0].1[0].person_id, "alice");
+        assert_eq!(grouped[0].1[0].link_id.as_deref(), Some("start"));
+        assert_eq!(grouped[1].0, 1);
+        assert_eq!(grouped[1].1.len(), 1);
+        assert_eq!(grouped[1].1[0].event_type, "act_start:w");
+        assert!(grouped[1].1[0].link_id.is_none());
     }
 }
