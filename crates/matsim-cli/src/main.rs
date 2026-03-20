@@ -4,7 +4,8 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
-    explain_person_plans, explain_person_reroute, explain_person_score, run_iterations_with_state, write_outputs,
+    analyze_events, explain_person_plans, explain_person_reroute, explain_person_score, run_iterations_with_state,
+    write_outputs,
 };
 use matsim_io::{load_scenario, write_population};
 use thiserror::Error;
@@ -78,6 +79,10 @@ enum Command {
         markdown: bool,
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+    AnalyzeEvents {
+        #[arg(long)]
+        config: PathBuf,
     },
 }
 
@@ -161,6 +166,7 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
+        Command::AnalyzeEvents { config } => analyze_events_command(&config),
     }
 }
 
@@ -195,6 +201,27 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
         }
     }
     println!("output_dir={}", output_dir.display());
+    Ok(())
+}
+
+fn analyze_events_command(config_path: &Path) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (output, _) = run_iterations_with_state(&scenario);
+    let analyses = analyze_events(&output);
+
+    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends");
+    for analysis in analyses {
+        println!(
+            "{};{:.6};{:.6};{};{};{};{}",
+            analysis.iteration,
+            analysis.avg_leg_travel_time_seconds,
+            analysis.avg_activity_duration_seconds,
+            analysis.departures,
+            analysis.arrivals,
+            analysis.activity_starts,
+            analysis.activity_ends
+        );
+    }
     Ok(())
 }
 
