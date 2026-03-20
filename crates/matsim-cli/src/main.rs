@@ -6,9 +6,8 @@ use clap::{Parser, Subcommand};
 use matsim_core::{
     analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans,
     explain_person_reroute, explain_person_reroute_score, explain_person_score,
-    run_iterations_with_state, write_node_crossingstats, write_node_flowstats,
-    write_node_prioritystats,
-    write_node_inbound_flowstats, write_outputs,
+    run_iterations_with_state, write_node_batchstats, write_node_crossingstats,
+    write_node_flowstats, write_node_inbound_flowstats, write_node_prioritystats, write_outputs,
 };
 use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
@@ -415,6 +414,11 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     )?;
     write_node_prioritystats(
         &output_dir.join("node_prioritystats.csv"),
+        &output,
+        &scenario.network,
+    )?;
+    write_node_batchstats(
+        &output_dir.join("node_batchstats.csv"),
         &output,
         &scenario.network,
     )?;

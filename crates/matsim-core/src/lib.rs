@@ -392,6 +392,17 @@ pub struct NodePriorityStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeBatchStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub ready_time_seconds: f64,
+    pub inbound_links: String,
+    pub release_pattern: String,
+    pub switches: usize,
+    pub group_size: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1467,6 +1478,34 @@ pub fn write_node_prioritystats(
     Ok(())
 }
 
+pub fn write_node_batchstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;ready_time_seconds;inbound_links;release_pattern;switches;group_size"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_batches(output, network) {
+        writeln!(
+            writer,
+            "{};{};{:.6};{};{};{};{}",
+            stat.iteration,
+            stat.node_id,
+            stat.ready_time_seconds,
+            stat.inbound_links,
+            stat.release_pattern,
+            stat.switches,
+            stat.group_size
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -1981,6 +2020,62 @@ pub fn analyze_node_priorities(output: &RunOutput, network: &Network) -> Vec<Nod
             .then_with(|| left.node_id.cmp(&right.node_id))
             .then_with(|| left.deterministic_priority.total_cmp(&right.deterministic_priority))
             .then_with(|| left.inbound_link_id.cmp(&right.inbound_link_id))
+    });
+    stats
+}
+
+pub fn analyze_node_batches(output: &RunOutput, network: &Network) -> Vec<NodeBatchStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<(String, i64), Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            groups
+                .entry((link.to_node_id.clone(), to_millis(traversal.free_speed_exit_time_seconds)))
+                .or_default()
+                .push(traversal);
+        }
+        for ((node_id, ready_time_ms), mut traversals) in groups {
+            let unique_links = traversals
+                .iter()
+                .map(|traversal| traversal.link_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique_links.len() < 2 {
+                continue;
+            }
+            traversals.sort_by(|left, right| {
+                left.queue_exit_time_seconds
+                    .total_cmp(&right.queue_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let release_links = traversals
+                .iter()
+                .map(|traversal| traversal.link_id.clone())
+                .collect::<Vec<_>>();
+            let switches = release_links
+                .windows(2)
+                .filter(|window| window[0] != window[1])
+                .count();
+            stats.push(NodeBatchStat {
+                iteration: iteration.iteration,
+                node_id,
+                ready_time_seconds: ready_time_ms as f64 / 1000.0,
+                inbound_links: unique_links.into_iter().collect::<Vec<_>>().join("|"),
+                release_pattern: release_links.join("|"),
+                switches,
+                group_size: traversals.len(),
+            });
+        }
+    }
+    stats.sort_by(|left, right| {
+        left.iteration
+            .cmp(&right.iteration)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+            .then_with(|| left.ready_time_seconds.total_cmp(&right.ready_time_seconds))
     });
     stats
 }
