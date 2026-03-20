@@ -4,9 +4,8 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
-    analyze_event_groups, analyze_events, explain_person_plans, explain_person_reroute, explain_person_score,
-    run_iterations_with_state,
-    write_outputs,
+    analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans, explain_person_reroute,
+    explain_person_score, run_iterations_with_state, write_outputs,
 };
 use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
@@ -86,6 +85,14 @@ enum Command {
         config: PathBuf,
     },
     AnalyzeEventsFile {
+        #[arg(long)]
+        events: PathBuf,
+    },
+    AnalyzeLinkEvents {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    AnalyzeLinkEventsFile {
         #[arg(long)]
         events: PathBuf,
     },
@@ -173,6 +180,8 @@ fn run() -> Result<(), CliError> {
         } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
+        Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
+        Command::AnalyzeLinkEventsFile { events } => analyze_link_events_file_command(&events),
     }
 }
 
@@ -255,6 +264,40 @@ fn analyze_events_file_command(events_path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+fn analyze_link_events_command(config_path: &Path) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (output, _) = run_iterations_with_state(&scenario);
+    let grouped = output
+        .iterations
+        .iter()
+        .map(|iteration| (iteration.iteration, iteration.events.clone()))
+        .collect::<Vec<_>>();
+    let analyses = analyze_link_event_groups(&grouped);
+
+    println!("iteration;link_id;avg_travel_time_seconds;traversals");
+    for analysis in analyses {
+        println!(
+            "{};{};{:.6};{}",
+            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
+        );
+    }
+    Ok(())
+}
+
+fn analyze_link_events_file_command(events_path: &Path) -> Result<(), CliError> {
+    let grouped = load_events(events_path)?;
+    let analyses = analyze_link_event_groups(&grouped);
+
+    println!("iteration;link_id;avg_travel_time_seconds;traversals");
+    for analysis in analyses {
+        println!(
+            "{};{};{:.6};{}",
+            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
+        );
+    }
+    Ok(())
+}
+
 fn resolve_output_dir(config_path: &Path, configured_output: &str) -> PathBuf {
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let candidate = Path::new(configured_output);
@@ -273,6 +316,7 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
         "traveldistancestats.csv",
         "observed_link_costs.csv",
         "eventstats.csv",
+        "link_eventstats.csv",
     ] {
         let left_path = left.join(name);
         let right_path = right.join(name);

@@ -244,6 +244,14 @@ pub struct EventAnalysis {
 }
 
 #[derive(Debug, Clone)]
+pub struct LinkEventAnalysis {
+    pub iteration: u32,
+    pub link_id: String,
+    pub avg_travel_time_seconds: f64,
+    pub traversals: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -718,6 +726,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
+    write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
     Ok(())
 }
 
@@ -750,6 +759,13 @@ pub fn analyze_event_groups(grouped_events: &[(u32, Vec<EventRecord>)]) -> Vec<E
     grouped_events
         .iter()
         .map(|(iteration, events)| analyze_event_records(*iteration, events))
+        .collect()
+}
+
+pub fn analyze_link_event_groups(grouped_events: &[(u32, Vec<EventRecord>)]) -> Vec<LinkEventAnalysis> {
+    grouped_events
+        .iter()
+        .flat_map(|(iteration, events)| analyze_link_event_records(*iteration, events))
         .collect()
 }
 
@@ -812,6 +828,52 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
         activity_starts: activity_start_count,
         activity_ends: activity_end_count,
     }
+}
+
+fn analyze_link_event_records(iteration: u32, events: &[EventRecord]) -> Vec<LinkEventAnalysis> {
+    let mut open_enters = BTreeMap::<(String, usize, String), Vec<f64>>::new();
+    let mut link_sums = BTreeMap::<String, f64>::new();
+    let mut link_counts = BTreeMap::<String, usize>::new();
+
+    for event in events {
+        match event.event_type.as_str() {
+            "link_enter" => {
+                if let Some(link_id) = &event.link_id {
+                    open_enters
+                        .entry((event.person_id.clone(), event.leg_index, link_id.clone()))
+                        .or_default()
+                        .push(event.time_seconds);
+                }
+            }
+            "link_leave" => {
+                if let Some(link_id) = &event.link_id {
+                    let key = (event.person_id.clone(), event.leg_index, link_id.clone());
+                    if let Some(starts) = open_enters.get_mut(&key) {
+                        if !starts.is_empty() {
+                            let start_time = starts.remove(0);
+                            *link_sums.entry(link_id.clone()).or_default() +=
+                                (event.time_seconds - start_time).max(0.0);
+                            *link_counts.entry(link_id.clone()).or_default() += 1;
+                        }
+                        if starts.is_empty() {
+                            open_enters.remove(&key);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    link_sums
+        .into_iter()
+        .map(|(link_id, sum)| LinkEventAnalysis {
+            iteration,
+            avg_travel_time_seconds: sum / (*link_counts.get(&link_id).unwrap_or(&1) as f64),
+            traversals: *link_counts.get(&link_id).unwrap_or(&0),
+            link_id,
+        })
+        .collect()
 }
 
 pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<PersonRerouteExplanation> {
@@ -1069,6 +1131,26 @@ fn write_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
             analysis.link_leaves,
             analysis.activity_starts,
             analysis.activity_ends
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn write_link_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;link_id;avg_travel_time_seconds;traversals")
+        .map_err(|source| write_error(path, source))?;
+    let grouped = output
+        .iterations
+        .iter()
+        .map(|iteration| (iteration.iteration, iteration.events.clone()))
+        .collect::<Vec<_>>();
+    for analysis in analyze_link_event_groups(&grouped) {
+        writeln!(
+            writer,
+            "{};{};{:.6};{}",
+            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
         )
         .map_err(|source| write_error(path, source))?;
     }
@@ -2212,5 +2294,50 @@ mod tests {
         assert_eq!(person.selected_plan_index, 1);
         assert_eq!(person.plans[0].score, Some(10.0));
         assert_eq!(person.plans[1].score, Some(5.0));
+    }
+
+    #[test]
+    fn link_event_analysis_pairs_enter_and_leave_per_link() {
+        let grouped = vec![(
+            0,
+            vec![
+                EventRecord {
+                    time_seconds: 10.0,
+                    person_id: "1".to_string(),
+                    event_type: "link_enter".to_string(),
+                    link_id: Some("a".to_string()),
+                    leg_index: 0,
+                },
+                EventRecord {
+                    time_seconds: 14.0,
+                    person_id: "1".to_string(),
+                    event_type: "link_leave".to_string(),
+                    link_id: Some("a".to_string()),
+                    leg_index: 0,
+                },
+                EventRecord {
+                    time_seconds: 20.0,
+                    person_id: "2".to_string(),
+                    event_type: "link_enter".to_string(),
+                    link_id: Some("a".to_string()),
+                    leg_index: 0,
+                },
+                EventRecord {
+                    time_seconds: 26.0,
+                    person_id: "2".to_string(),
+                    event_type: "link_leave".to_string(),
+                    link_id: Some("a".to_string()),
+                    leg_index: 0,
+                },
+            ],
+        )];
+
+        let analyses = analyze_link_event_groups(&grouped);
+
+        assert_eq!(analyses.len(), 1);
+        assert_eq!(analyses[0].iteration, 0);
+        assert_eq!(analyses[0].link_id, "a");
+        assert_eq!(analyses[0].traversals, 2);
+        assert!((analyses[0].avg_travel_time_seconds - 5.0).abs() < 1.0e-9);
     }
 }
