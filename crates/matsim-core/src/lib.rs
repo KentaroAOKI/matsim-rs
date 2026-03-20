@@ -3424,6 +3424,10 @@ struct DrainedNodeCrossing {
     crossing: NodeCrossingResult,
 }
 
+struct PreparedLinkOffer {
+    ready_to_leave: LinkReadyToLeave,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3529,26 +3533,13 @@ fn simulate_link_traversal(
     link: &Link,
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
-    let ready_to_leave = {
-        let queue_link_state = queue_state
-            .link_states
-            .entry(link_id.to_string())
-            .or_default();
-        queue_link_state.ready_to_leave_link(enter_time_s, link)
-    };
-    queue_state.enqueue_pending_offer(PendingNodeOffer {
-        ready_time_s: ready_to_leave.free_speed_exit_s,
-        sim_step: ready_to_leave.free_speed_exit_s.floor() as i64,
-        inbound_link_id: link_id.to_string(),
-        to_node_id: link.to_node_id.clone(),
-        headway_s: ready_to_leave.headway_s,
-    });
+    let prepared_offer = queue_state.prepare_link_offer(link_id, link, enter_time_s);
     let drained_crossing =
-        queue_state.drain_node_crossing(link_id, &link.to_node_id, &ready_to_leave);
+        queue_state.drain_node_crossing(link_id, &link.to_node_id, &prepared_offer.ready_to_leave);
     SimulatedLinkTraversal {
         exit_time_s: drained_crossing.crossing.exit_time_s,
-        free_speed_exit_s: ready_to_leave.free_speed_exit_s,
-        headway_s: ready_to_leave.headway_s,
+        free_speed_exit_s: prepared_offer.ready_to_leave.free_speed_exit_s,
+        headway_s: prepared_offer.ready_to_leave.headway_s,
         buffer_size_before_release: drained_crossing.crossing.buffer_size_before_release,
         buffer_size_after_release: drained_crossing.crossing.buffer_size_after_release,
     }
@@ -3772,6 +3763,29 @@ impl QueueLinkState {
 }
 
 impl QueueSimulationState {
+    fn prepare_link_offer(
+        &mut self,
+        inbound_link_id: &str,
+        link: &Link,
+        enter_time_s: f64,
+    ) -> PreparedLinkOffer {
+        let ready_to_leave = {
+            let queue_link_state = self
+                .link_states
+                .entry(inbound_link_id.to_string())
+                .or_default();
+            queue_link_state.ready_to_leave_link(enter_time_s, link)
+        };
+        self.enqueue_pending_offer(PendingNodeOffer {
+            ready_time_s: ready_to_leave.free_speed_exit_s,
+            sim_step: ready_to_leave.free_speed_exit_s.floor() as i64,
+            inbound_link_id: inbound_link_id.to_string(),
+            to_node_id: link.to_node_id.clone(),
+            headway_s: ready_to_leave.headway_s,
+        });
+        PreparedLinkOffer { ready_to_leave }
+    }
+
     fn enqueue_pending_offer(&mut self, offer: PendingNodeOffer) {
         self.pending_node_offers.push_back(offer);
     }
