@@ -3376,6 +3376,17 @@ struct SimulatedLinkTraversal {
     buffer_size_after_release: usize,
 }
 
+struct LinkReadyToLeave {
+    free_speed_exit_s: f64,
+    headway_s: f64,
+}
+
+struct NodeCrossingResult {
+    exit_time_s: f64,
+    buffer_size_before_release: usize,
+    buffer_size_after_release: usize,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3481,21 +3492,15 @@ fn simulate_link_traversal(
     link: &Link,
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
-    let headway_s = if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
-        3600.0 / link.capacity_veh_per_hour
-    } else {
-        0.0
-    };
     let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
-    let free_speed_exit_s = queue_link_state.ready_to_leave_link(enter_time_s, link);
-    let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
-        queue_link_state.cross_node(free_speed_exit_s, headway_s);
+    let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
+    let crossing = queue_link_state.cross_node(&ready_to_leave);
     SimulatedLinkTraversal {
-        exit_time_s,
-        free_speed_exit_s,
-        headway_s,
-        buffer_size_before_release,
-        buffer_size_after_release,
+        exit_time_s: crossing.exit_time_s,
+        free_speed_exit_s: ready_to_leave.free_speed_exit_s,
+        headway_s: ready_to_leave.headway_s,
+        buffer_size_before_release: crossing.buffer_size_before_release,
+        buffer_size_after_release: crossing.buffer_size_after_release,
     }
 }
 
@@ -3630,13 +3635,30 @@ struct NodeFlowState {
 }
 
 impl QueueLinkState {
-    fn ready_to_leave_link(&self, enter_time_s: f64, link: &Link) -> f64 {
-        enter_time_s + link.length_m / link.freespeed_mps
+    fn ready_to_leave_link(&self, enter_time_s: f64, link: &Link) -> LinkReadyToLeave {
+        let headway_s =
+            if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
+                3600.0 / link.capacity_veh_per_hour
+            } else {
+                0.0
+            };
+        LinkReadyToLeave {
+            free_speed_exit_s: enter_time_s + link.length_m / link.freespeed_mps,
+            headway_s,
+        }
     }
 
-    fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> (f64, usize, usize) {
-        self.node_flow_state.enter_buffer(ready_to_leave_link_s);
-        self.node_flow_state.release_from_buffer(headway_s)
+    fn cross_node(&mut self, ready_to_leave: &LinkReadyToLeave) -> NodeCrossingResult {
+        self.node_flow_state
+            .enter_buffer(ready_to_leave.free_speed_exit_s);
+        let (exit_time_s, buffer_size_before_release, buffer_size_after_release) = self
+            .node_flow_state
+            .release_from_buffer(ready_to_leave.headway_s);
+        NodeCrossingResult {
+            exit_time_s,
+            buffer_size_before_release,
+            buffer_size_after_release,
+        }
     }
 }
 
