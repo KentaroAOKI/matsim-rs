@@ -76,8 +76,13 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     println!("persons={}", scenario.population.persons.len());
     println!("network_links={}", scenario.network.links.len());
     println!("iterations={}", output.iterations.len());
+    println!("strategies={}", scenario.config.replanning.strategies.len());
     if let Some(last) = output.iterations.last() {
         println!("last_iteration_score={:.6}", last.score_stats.avg_executed);
+        println!(
+            "last_iteration_replanning={{strategies_considered:{},persons_replanned:{}}}",
+            last.replanning_summary.strategies_considered, last.replanning_summary.persons_replanned
+        );
     }
     println!("output_dir={}", output_dir.display());
     Ok(())

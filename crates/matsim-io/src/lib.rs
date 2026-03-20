@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use matsim_core::{
     Activity, ActivityScoringParameters, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
-    Population, Scenario, ScoringConfig, ModeScoringParameters,
+    Population, Scenario, ScoringConfig, ModeScoringParameters, ReplanningConfig, StrategySetting,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -67,11 +67,14 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
     let mut output_directory: Option<String> = None;
     let mut last_iteration = 0_u32;
     let mut scoring = ScoringConfig::default();
+    let mut replanning = ReplanningConfig::default();
     let mut current_paramset_type: Option<String> = None;
     let mut current_activity_params = ActivityScoringParameters::default();
     let mut current_activity_type: Option<String> = None;
     let mut current_mode_params = ModeScoringParameters::default();
     let mut current_mode: Option<String> = None;
+    let mut current_strategy_name: Option<String> = None;
+    let mut current_strategy_weight: Option<f64> = None;
 
     loop {
         match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
@@ -89,6 +92,9 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                 } else if current_paramset_type.as_deref() == Some("modeParams") {
                     current_mode_params = ModeScoringParameters::default();
                     current_mode = None;
+                } else if current_paramset_type.as_deref() == Some("strategysettings") {
+                    current_strategy_name = None;
+                    current_strategy_weight = None;
                 }
             }
             Event::End(ref e) if e.name().as_ref() == b"module" => {
@@ -102,6 +108,13 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                 } else if current_paramset_type.as_deref() == Some("modeParams") {
                     if let Some(mode) = current_mode.take() {
                         scoring.mode_params.insert(mode, current_mode_params.clone());
+                    }
+                } else if current_paramset_type.as_deref() == Some("strategysettings") {
+                    if let Some(name) = current_strategy_name.take() {
+                        replanning.strategies.push(StrategySetting {
+                            name,
+                            weight: current_strategy_weight.unwrap_or(0.0),
+                        });
                     }
                 }
                 current_paramset_type = None;
@@ -188,6 +201,15 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                         _ => {}
                     }
                 }
+                if current_module.as_deref() == Some("replanning")
+                    && current_paramset_type.as_deref() == Some("strategysettings")
+                {
+                    match name.as_str() {
+                        "strategyName" => current_strategy_name = Some(value.clone()),
+                        "weight" => current_strategy_weight = Some(parse_f64(path, &value)?),
+                        _ => {}
+                    }
+                }
             }
             Event::Eof => break,
             _ => {}
@@ -202,6 +224,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
         output_directory: output_directory.unwrap_or_else(|| "./output-rust".to_string()),
         last_iteration,
         scoring,
+        replanning,
     })
 }
 
@@ -474,6 +497,9 @@ mod tests {
             config.scoring.activity_params.get("w").unwrap().closing_time_seconds,
             Some(64_800.0)
         );
+        assert_eq!(config.replanning.strategies.len(), 2);
+        assert_eq!(config.replanning.strategies[0].name, "BestScore");
+        assert_eq!(config.replanning.strategies[1].weight, 0.1);
     }
 
     #[test]

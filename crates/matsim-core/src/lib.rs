@@ -12,6 +12,7 @@ pub struct MatsimConfig {
     pub output_directory: String,
     pub last_iteration: u32,
     pub scoring: ScoringConfig,
+    pub replanning: ReplanningConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -22,6 +23,17 @@ pub struct ScoringConfig {
     pub waiting_utils_per_hour: f64,
     pub activity_params: BTreeMap<String, ActivityScoringParameters>,
     pub mode_params: BTreeMap<String, ModeScoringParameters>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReplanningConfig {
+    pub strategies: Vec<StrategySetting>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategySetting {
+    pub name: String,
+    pub weight: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,6 +139,13 @@ pub struct IterationOutput {
     pub mode_stats: Vec<ModeStat>,
     pub travel_distance_stats: TravelDistanceStats,
     pub score_stats: ScoreStats,
+    pub replanning_summary: ReplanningSummary,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReplanningSummary {
+    pub strategies_considered: usize,
+    pub persons_replanned: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -267,12 +286,29 @@ fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
         avg_average: score_avg,
         avg_best: score_avg,
     };
+    let replanning_summary = apply_replanning_hook(scenario, iteration);
 
     IterationOutput {
         iteration,
         mode_stats,
         travel_distance_stats,
         score_stats,
+        replanning_summary,
+    }
+}
+
+fn apply_replanning_hook(scenario: &Scenario, iteration: u32) -> ReplanningSummary {
+    if iteration >= scenario.config.last_iteration {
+        return ReplanningSummary {
+            strategies_considered: scenario.config.replanning.strategies.len(),
+            persons_replanned: 0,
+        };
+    }
+
+    // Placeholder hook for future BestScore/ReRoute implementations.
+    ReplanningSummary {
+        strategies_considered: scenario.config.replanning.strategies.len(),
+        persons_replanned: 0,
     }
 }
 
