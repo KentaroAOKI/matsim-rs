@@ -2,7 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use matsim_core::{explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, write_outputs};
+use matsim_core::{
+    explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, run_iterations_with_state,
+    write_outputs,
+};
 use matsim_io::load_scenario;
 use thiserror::Error;
 
@@ -43,6 +46,8 @@ enum Command {
         config: PathBuf,
         #[arg(long)]
         person_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
     },
 }
 
@@ -76,7 +81,11 @@ fn run() -> Result<(), CliError> {
         Command::Compare { left, right } => compare_command(&left, &right),
         Command::Explain { config, person_id } => explain_command(&config, &person_id),
         Command::ExplainReroute { config, person_id } => explain_reroute_command(&config, &person_id),
-        Command::ExplainPlans { config, person_id } => explain_plans_command(&config, &person_id),
+        Command::ExplainPlans {
+            config,
+            person_id,
+            iteration,
+        } => explain_plans_command(&config, &person_id, iteration),
     }
 }
 
@@ -198,12 +207,23 @@ fn explain_reroute_command(config_path: &Path, person_id: &str) -> Result<(), Cl
     Ok(())
 }
 
-fn explain_plans_command(config_path: &Path, person_id: &str) -> Result<(), CliError> {
+fn explain_plans_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
+    let scenario = if let Some(iteration) = iteration {
+        let mut scenario_for_run = scenario.clone();
+        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
+        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
+        final_state
+    } else {
+        scenario
+    };
     let explanation =
         explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", explanation.person_id);
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
     println!("selected_plan_index={}", explanation.selected_plan_index);
     println!("plans={}", explanation.plans.len());
     for plan in explanation.plans {

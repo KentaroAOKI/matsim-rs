@@ -292,16 +292,23 @@ pub fn run_single_iteration(scenario: &Scenario) -> IterationOutput {
 }
 
 pub fn run_iterations(scenario: &Scenario) -> RunOutput {
+    run_iterations_with_state(scenario).0
+}
+
+pub fn run_iterations_with_state(scenario: &Scenario) -> (RunOutput, Scenario) {
     let mut scenario = scenario.clone();
     let mut state = SimulationState::new(scenario.population.persons.len());
     let iterations = (0..=scenario.config.last_iteration)
         .map(|iteration| run_iteration(&mut scenario, &mut state, iteration))
         .collect();
 
-    RunOutput {
-        last_iteration: scenario.config.last_iteration,
-        iterations,
-    }
+    (
+        RunOutput {
+            last_iteration: scenario.config.last_iteration,
+            iterations,
+        },
+        scenario,
+    )
 }
 
 impl SimulationState {

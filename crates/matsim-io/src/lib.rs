@@ -491,7 +491,7 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matsim_core::{explain_person_plans, explain_person_reroute, run_iterations};
+    use matsim_core::{explain_person_plans, explain_person_reroute, run_iterations, run_iterations_with_state};
     use std::path::PathBuf;
 
     #[test]
@@ -681,6 +681,22 @@ mod tests {
         assert_eq!(output.iterations[1].plan_memory_stats.avg_plans_per_person, 1.0);
         assert_eq!(output.iterations[1].plan_memory_stats.max_plans_per_person, 1);
         assert_eq!(output.iterations[1].plan_memory_stats.selected_plan_share, 1.0);
+    }
+
+    #[test]
+    fn plan_memory_cap_fixture_prunes_final_person_plans() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/plan-memory-cap/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let (_, final_state) = run_iterations_with_state(&scenario);
+        let best = explain_person_plans(&final_state, "best").unwrap();
+
+        assert_eq!(best.plans.len(), 1);
+        assert_eq!(best.selected_plan_index, 0);
+        assert!(best.plans[0].score.is_some());
+        assert!(best.plans[0].selected);
     }
 
     #[test]
