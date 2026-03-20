@@ -34,6 +34,7 @@ pub struct ReplanningConfig {
 pub struct StrategySetting {
     pub name: String,
     pub weight: f64,
+    pub disable_after_fraction: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -445,6 +446,7 @@ fn apply_replanning_hook(
             &scenario.config.replanning.strategies,
             scenario.config.random_seed,
             iteration,
+            scenario.config.last_iteration,
             &person.id,
         ) else {
             continue;
@@ -470,11 +472,12 @@ fn select_strategy<'a>(
     strategies: &'a [StrategySetting],
     random_seed: u64,
     iteration: u32,
+    last_iteration: u32,
     person_id: &str,
 ) -> Option<&'a str> {
     let active_strategies = strategies
         .iter()
-        .filter(|strategy| strategy.weight > 0.0)
+        .filter(|strategy| strategy.weight > 0.0 && strategy_is_active(strategy, iteration, last_iteration))
         .collect::<Vec<_>>();
     let total_weight = active_strategies.iter().map(|strategy| strategy.weight).sum::<f64>();
     if total_weight <= 0.0 {
@@ -495,6 +498,20 @@ fn select_strategy<'a>(
         .rev()
         .find(|strategy| strategy.weight > 0.0)
         .map(|strategy| strategy.name.as_str())
+}
+
+fn strategy_is_active(strategy: &StrategySetting, iteration: u32, last_iteration: u32) -> bool {
+    let Some(disable_after_fraction) = strategy.disable_after_fraction else {
+        return true;
+    };
+    if !is_innovation_strategy(strategy.name.as_str()) || last_iteration == 0 {
+        return true;
+    }
+    (iteration as f64) / (last_iteration as f64) < disable_after_fraction
+}
+
+fn is_innovation_strategy(strategy_name: &str) -> bool {
+    matches!(strategy_name, "ReRoute")
 }
 
 fn replanning_draw(random_seed: u64, iteration: u32, person_id: &str) -> f64 {
@@ -1470,6 +1487,7 @@ mod tests {
                     strategies: vec![StrategySetting {
                         name: "BestScore".to_string(),
                         weight: 1.0,
+                        disable_after_fraction: None,
                     }],
                 },
             },
@@ -1535,6 +1553,7 @@ mod tests {
                     strategies: vec![StrategySetting {
                         name: "ReRoute".to_string(),
                         weight: 1.0,
+                        disable_after_fraction: None,
                     }],
                 },
             },
@@ -1619,6 +1638,7 @@ mod tests {
                     strategies: vec![StrategySetting {
                         name: "ReRoute".to_string(),
                         weight: 1.0,
+                        disable_after_fraction: None,
                     }],
                 },
             },
@@ -1727,10 +1747,12 @@ mod tests {
                         StrategySetting {
                             name: "BestScore".to_string(),
                             weight: 0.0,
+                            disable_after_fraction: None,
                         },
                         StrategySetting {
                             name: "ReRoute".to_string(),
                             weight: 1.0,
+                            disable_after_fraction: None,
                         },
                     ],
                 },
@@ -1778,5 +1800,24 @@ mod tests {
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(person.selected_plan_index, 2);
         assert_eq!(person.plans.len(), 3);
+    }
+
+    #[test]
+    fn innovation_strategy_can_be_disabled_after_fraction() {
+        let reroute = StrategySetting {
+            name: "ReRoute".to_string(),
+            weight: 1.0,
+            disable_after_fraction: Some(0.5),
+        };
+        let best_score = StrategySetting {
+            name: "BestScore".to_string(),
+            weight: 1.0,
+            disable_after_fraction: Some(0.5),
+        };
+
+        assert!(strategy_is_active(&reroute, 0, 4));
+        assert!(strategy_is_active(&reroute, 1, 4));
+        assert!(!strategy_is_active(&reroute, 2, 4));
+        assert!(strategy_is_active(&best_score, 2, 4));
     }
 }

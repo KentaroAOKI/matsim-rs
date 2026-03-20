@@ -75,6 +75,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
     let mut current_mode: Option<String> = None;
     let mut current_strategy_name: Option<String> = None;
     let mut current_strategy_weight: Option<f64> = None;
+    let mut current_strategy_disable_after_fraction: Option<f64> = None;
 
     loop {
         match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
@@ -95,6 +96,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                 } else if current_paramset_type.as_deref() == Some("strategysettings") {
                     current_strategy_name = None;
                     current_strategy_weight = None;
+                    current_strategy_disable_after_fraction = None;
                 }
             }
             Event::End(ref e) if e.name().as_ref() == b"module" => {
@@ -114,6 +116,7 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                         replanning.strategies.push(StrategySetting {
                             name,
                             weight: current_strategy_weight.unwrap_or(0.0),
+                            disable_after_fraction: current_strategy_disable_after_fraction,
                         });
                     }
                 }
@@ -207,6 +210,9 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     match name.as_str() {
                         "strategyName" => current_strategy_name = Some(value.clone()),
                         "weight" => current_strategy_weight = Some(parse_f64(path, &value)?),
+                        "disableAfterFractionOfIterations" => {
+                            current_strategy_disable_after_fraction = Some(parse_f64(path, &value)?)
+                        }
                         _ => {}
                     }
                 }
@@ -510,6 +516,7 @@ mod tests {
         assert_eq!(config.replanning.strategies.len(), 2);
         assert_eq!(config.replanning.strategies[0].name, "BestScore");
         assert_eq!(config.replanning.strategies[1].weight, 0.1);
+        assert_eq!(config.replanning.strategies[0].disable_after_fraction, None);
     }
 
     #[test]
@@ -622,5 +629,25 @@ mod tests {
         assert_eq!(reroute.legs[0].current_link_ids, vec!["slow-1", "slow-2", "end"]);
         assert_eq!(reroute.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
         assert!(reroute.legs[0].rerouted_cost_seconds < reroute.legs[0].current_cost_seconds);
+    }
+
+    #[test]
+    fn innovation_cutoff_fixture_stops_reroute_in_late_iterations() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/innovation-cutoff/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        assert_eq!(
+            scenario.config.replanning.strategies[0].disable_after_fraction,
+            Some(0.5)
+        );
+
+        let output = run_iterations(&scenario);
+        assert_eq!(output.iterations.len(), 4);
+        assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 1);
+        assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
+        assert_eq!(output.iterations[2].replanning_summary.persons_replanned, 0);
+        assert_eq!(output.iterations[3].replanning_summary.persons_replanned, 0);
     }
 }
