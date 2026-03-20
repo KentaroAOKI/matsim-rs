@@ -482,6 +482,7 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use matsim_core::run_iterations;
     use std::path::PathBuf;
 
     #[test]
@@ -541,5 +542,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(first_leg.route_node_ids, vec!["2", "7", "12"]);
+    }
+
+    #[test]
+    fn loads_multiple_plans_and_replans_best_score() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/two-plans/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        assert_eq!(scenario.population.persons.len(), 1);
+        assert_eq!(scenario.population.persons[0].plans.len(), 2);
+        assert_eq!(scenario.population.persons[0].selected_plan_index, 0);
+        assert_eq!(scenario.population.persons[0].plans[0].score, Some(1.0));
+        assert_eq!(scenario.population.persons[0].plans[1].score, Some(500.0));
+
+        let output = run_iterations(&scenario);
+        assert_eq!(output.iterations.len(), 2);
+        assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 1);
+        assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
     }
 }

@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<!DOCTYPE plans SYSTEM "http://www.matsim.org/files/dtd/plans_v4.dtd">
+<plans>
+  <person id="1">
+    <plan score="1.0" selected="yes">
+      <act type="h" x="0" y="0" link="1" end_time="06:00:00" />
+      <leg mode="car">
+        <route>2</route>
+      </leg>
+      <act type="w" x="1000" y="0" link="2" dur="01:00:00" />
+      <leg mode="car">
+        <route>1</route>
+      </leg>
+      <act type="h" x="0" y="0" link="1" />
+    </plan>
+    <plan score="500.0">
+      <act type="h" x="0" y="0" link="1" end_time="06:00:00" />
+      <leg mode="car">
+        <route>2</route>
+      </leg>
+      <act type="w" x="1000" y="0" link="2" dur="02:00:00" />
+      <leg mode="car">
+        <route>1</route>
+      </leg>
+      <act type="h" x="0" y="0" link="1" />
+    </plan>
+  </person>
+</plans>
