@@ -3387,6 +3387,10 @@ struct NodeCrossingResult {
     buffer_size_after_release: usize,
 }
 
+struct NodeCrossingDecision {
+    selected_inbound_link_id: Option<String>,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3502,7 +3506,9 @@ fn simulate_link_traversal(
         .or_default();
     queue_node_state.register_inbound_link(link_id);
     let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
-    let crossing = queue_link_state.cross_node(&ready_to_leave, queue_node_state);
+    let decision = queue_node_state.prepare_crossing(link_id);
+    let crossing = queue_link_state.cross_node(&ready_to_leave, &decision);
+    queue_node_state.finish_crossing(decision);
     SimulatedLinkTraversal {
         exit_time_s: crossing.exit_time_s,
         free_speed_exit_s: ready_to_leave.free_speed_exit_s,
@@ -3645,6 +3651,7 @@ struct QueueSimulationState {
 #[derive(Debug, Default)]
 struct QueueNodeState {
     offering_buffer_state: NodeOfferingBufferState,
+    selector_state: NodeSelectorState,
 }
 
 #[derive(Debug, Default)]
@@ -3668,6 +3675,11 @@ struct NodeOfferingBufferState {
     pending_inbound_links: VecDeque<String>,
 }
 
+#[derive(Debug, Default)]
+struct NodeSelectorState {
+    selected_inbound_link_id: Option<String>,
+}
+
 impl QueueLinkState {
     fn ready_to_leave_link(&self, enter_time_s: f64, link: &Link) -> LinkReadyToLeave {
         let headway_s =
@@ -3685,11 +3697,10 @@ impl QueueLinkState {
     fn cross_node(
         &mut self,
         ready_to_leave: &LinkReadyToLeave,
-        queue_node_state: &mut QueueNodeState,
+        _decision: &NodeCrossingDecision,
     ) -> NodeCrossingResult {
         self.node_flow_state
             .enter_buffer(ready_to_leave.free_speed_exit_s);
-        queue_node_state.note_ready_vehicle();
         let (exit_time_s, buffer_size_before_release, buffer_size_after_release) = self
             .node_flow_state
             .release_from_buffer(ready_to_leave.headway_s);
@@ -3704,10 +3715,19 @@ impl QueueLinkState {
 impl QueueNodeState {
     fn register_inbound_link(&mut self, link_id: &str) {
         self.offering_buffer_state.register_inbound_link(link_id);
+        self.selector_state
+            .register_inbound_link(link_id, &self.offering_buffer_state);
     }
 
-    fn note_ready_vehicle(&mut self) {
+    fn prepare_crossing(&mut self, default_inbound_link_id: &str) -> NodeCrossingDecision {
+        self.selector_state
+            .select_inbound_link(default_inbound_link_id, &self.offering_buffer_state)
+    }
+
+    fn finish_crossing(&mut self, decision: NodeCrossingDecision) {
         self.offering_buffer_state.note_ready_vehicle();
+        self.selector_state
+            .refresh_after_crossing(decision, &self.offering_buffer_state);
     }
 }
 
@@ -3771,6 +3791,62 @@ impl NodeOfferingBufferState {
     fn note_ready_vehicle(&mut self) {
         if let Some(inbound_link_id) = self.pending_inbound_links.pop_front() {
             self.pending_inbound_links.push_back(inbound_link_id);
+        }
+    }
+}
+
+impl NodeSelectorState {
+    fn register_inbound_link(
+        &mut self,
+        link_id: &str,
+        offering_buffer_state: &NodeOfferingBufferState,
+    ) {
+        if self.selected_inbound_link_id.is_none()
+            && offering_buffer_state
+                .pending_inbound_links
+                .iter()
+                .any(|pending_link_id| pending_link_id == link_id)
+        {
+            self.selected_inbound_link_id = Some(link_id.to_string());
+        }
+    }
+
+    fn select_inbound_link(
+        &mut self,
+        default_inbound_link_id: &str,
+        offering_buffer_state: &NodeOfferingBufferState,
+    ) -> NodeCrossingDecision {
+        self.refresh_selected_inbound(offering_buffer_state);
+        NodeCrossingDecision {
+            selected_inbound_link_id: self
+                .selected_inbound_link_id
+                .clone()
+                .or_else(|| Some(default_inbound_link_id.to_string())),
+        }
+    }
+
+    fn refresh_after_crossing(
+        &mut self,
+        decision: NodeCrossingDecision,
+        offering_buffer_state: &NodeOfferingBufferState,
+    ) {
+        self.selected_inbound_link_id = decision.selected_inbound_link_id;
+        self.refresh_selected_inbound(offering_buffer_state);
+    }
+
+    fn refresh_selected_inbound(&mut self, offering_buffer_state: &NodeOfferingBufferState) {
+        let still_valid = self
+            .selected_inbound_link_id
+            .as_ref()
+            .is_some_and(|selected_link_id| {
+                offering_buffer_state
+                    .pending_inbound_links
+                    .iter()
+                    .any(|pending_link_id| pending_link_id == selected_link_id)
+            });
+        if !still_valid {
+            self.selected_inbound_link_id =
+                offering_buffer_state.pending_inbound_links.front().cloned();
         }
     }
 }
