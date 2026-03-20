@@ -413,6 +413,7 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
                 departure_time_ms: to_millis(departure_time_s),
                 departure_time_s,
                 person_index,
+                person_id: person.id.clone(),
                 plan_element_index: leg_index,
             });
         }
@@ -461,6 +462,7 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
                 departure_time_ms: to_millis(next_departure_s),
                 departure_time_s: next_departure_s,
                 person_index: pending_leg.person_index,
+                person_id: person.id.clone(),
                 plan_element_index: next_leg_index,
             });
         }
@@ -551,11 +553,12 @@ struct PlanScoreBreakdown {
     items: Vec<ScoreBreakdownItem>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct PendingLeg {
     departure_time_ms: i64,
     departure_time_s: f64,
     person_index: usize,
+    person_id: String,
     plan_element_index: usize,
 }
 
@@ -574,7 +577,7 @@ impl Ord for PendingLeg {
         other
             .departure_time_ms
             .cmp(&self.departure_time_ms)
-            .then_with(|| self.person_index.cmp(&other.person_index))
+            .then_with(|| self.person_id.cmp(&other.person_id))
             .then_with(|| other.plan_element_index.cmp(&self.plan_element_index))
     }
 }
