@@ -1283,6 +1283,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_link_traversals(&output_dir.join("link_traversals.csv"), output)?;
     write_queue_delaystats(&output_dir.join("queue_delaystats.csv"), output)?;
     write_queue_groupstats(&output_dir.join("queue_groupstats.csv"), output)?;
+    write_queue_headwaystats(&output_dir.join("queue_headwaystats.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
@@ -1948,6 +1949,81 @@ fn write_queue_groupstats(path: &Path, output: &RunOutput) -> Result<(), CoreErr
                 max_delay,
                 first_rank_person_id,
                 last_rank_person_id
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_queue_headwaystats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;link_id;traversals;configured_headway_seconds;avg_arrival_gap_seconds;min_arrival_gap_seconds;max_arrival_gap_seconds;avg_queue_delay_seconds;max_queue_delay_seconds"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<String, Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            groups
+                .entry(traversal.link_id.clone())
+                .or_default()
+                .push(traversal);
+        }
+        for (link_id, mut traversals) in groups {
+            traversals.sort_by(|left, right| {
+                left.enter_time_seconds
+                    .total_cmp(&right.enter_time_seconds)
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+            });
+            let mut gaps = Vec::new();
+            for window in traversals.windows(2) {
+                let gap = (window[1].enter_time_seconds - window[0].enter_time_seconds).max(0.0);
+                gaps.push(gap);
+            }
+            let traversals_count = traversals.len();
+            let configured_headway = traversals
+                .first()
+                .map(|traversal| traversal.headway_seconds)
+                .unwrap_or(0.0);
+            let total_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .sum::<f64>();
+            let max_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .fold(0.0f64, f64::max);
+            let avg_gap = if gaps.is_empty() {
+                0.0
+            } else {
+                gaps.iter().sum::<f64>() / gaps.len() as f64
+            };
+            let min_gap = gaps.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_gap = gaps.iter().copied().fold(0.0f64, f64::max);
+            writeln!(
+                writer,
+                "{};{};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}",
+                iteration.iteration,
+                link_id,
+                traversals_count,
+                configured_headway,
+                avg_gap,
+                if min_gap.is_finite() { min_gap } else { 0.0 },
+                max_gap,
+                if traversals_count > 0 {
+                    total_delay / traversals_count as f64
+                } else {
+                    0.0
+                },
+                max_delay
             )
             .map_err(|source| write_error(path, source))?;
         }
