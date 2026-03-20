@@ -88,6 +88,24 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    InspectNetwork {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        iteration: Option<u32>,
+        #[arg(long, default_value = "delay")]
+        sort_by: NetworkSortKey,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 0.0)]
+        min_delay: f64,
+        #[arg(long)]
+        csv: bool,
+        #[arg(long)]
+        markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     AnalyzeEvents {
         #[arg(long)]
         config: PathBuf,
@@ -112,6 +130,28 @@ enum PopulationSortKey {
     Score,
     RerouteGain,
     Plans,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NetworkSortKey {
+    Id,
+    Delay,
+    TravelTime,
+    Traversals,
+}
+
+impl FromStr for NetworkSortKey {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "id" => Ok(Self::Id),
+            "delay" => Ok(Self::Delay),
+            "travel-time" => Ok(Self::TravelTime),
+            "traversals" => Ok(Self::Traversals),
+            _ => Err(format!("unsupported sort key `{value}`")),
+        }
+    }
 }
 
 impl FromStr for PopulationSortKey {
@@ -195,6 +235,16 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
+        Command::InspectNetwork {
+            config,
+            iteration,
+            sort_by,
+            limit,
+            min_delay,
+            csv,
+            markdown,
+            output,
+        } => inspect_network_command(&config, iteration, sort_by, limit, min_delay, csv, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
         Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
@@ -655,6 +705,141 @@ fn inspect_population_command(
         ));
     }
 
+    emit_text(&text, output)
+}
+
+fn inspect_network_command(
+    config_path: &Path,
+    iteration: Option<u32>,
+    sort_by: NetworkSortKey,
+    limit: Option<usize>,
+    min_delay: f64,
+    csv: bool,
+    markdown: bool,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (run_output, _) = run_iterations_with_state(&scenario);
+    let target_iteration = iteration.unwrap_or(run_output.last_iteration);
+    let selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == target_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: target_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+    let grouped = vec![(selected.iteration, selected.events.clone())];
+    let event_stats = analyze_link_event_groups(&grouped)
+        .into_iter()
+        .map(|stat| (stat.link_id.clone(), stat))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut rows = scenario
+        .network
+        .links
+        .values()
+        .map(|link| {
+            let freespeed = link.length_m / link.freespeed_mps;
+            let observed = selected
+                .observed_link_costs
+                .iter()
+                .find(|candidate| candidate.link_id == link.id)
+                .map(|candidate| candidate.travel_time_seconds)
+                .unwrap_or(freespeed);
+            let event_stat = event_stats.get(&link.id);
+            let traversals = event_stat.map(|stat| stat.traversals).unwrap_or(0);
+            let event_time = event_stat
+                .map(|stat| stat.avg_travel_time_seconds)
+                .unwrap_or(freespeed);
+            let delay = (observed - freespeed).max(0.0);
+            (
+                link.id.clone(),
+                freespeed,
+                observed,
+                event_time,
+                delay,
+                traversals,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    rows.retain(|row| row.4 >= min_delay);
+
+    match sort_by {
+        NetworkSortKey::Id => rows.sort_by(|left, right| left.0.cmp(&right.0)),
+        NetworkSortKey::Delay => rows.sort_by(|left, right| right.4.total_cmp(&left.4).then_with(|| left.0.cmp(&right.0))),
+        NetworkSortKey::TravelTime => {
+            rows.sort_by(|left, right| right.2.total_cmp(&left.2).then_with(|| left.0.cmp(&right.0)))
+        }
+        NetworkSortKey::Traversals => rows.sort_by(|left, right| right.5.cmp(&left.5).then_with(|| left.0.cmp(&right.0))),
+    }
+
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    let mut text = String::new();
+    if csv {
+        text.push_str("link_id;freespeed_travel_time;observed_travel_time;event_travel_time;avg_delay;traversals\n");
+        for row in rows {
+            text.push_str(&format!(
+                "{};{:.6};{:.6};{:.6};{:.6};{}\n",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    if markdown {
+        text.push_str("# Network Inspection\n");
+        text.push_str(&format!("\n- iteration: {target_iteration}\n"));
+        text.push_str(&format!("- links: {}\n", scenario.network.links.len()));
+        text.push_str(&format!(
+            "- sort_by: {}\n",
+            match sort_by {
+                NetworkSortKey::Id => "id",
+                NetworkSortKey::Delay => "delay",
+                NetworkSortKey::TravelTime => "travel-time",
+                NetworkSortKey::Traversals => "traversals",
+            }
+        ));
+        text.push_str(&format!("- min_delay: {:.6}\n", min_delay));
+        if let Some(limit) = limit {
+            text.push_str(&format!("- limit: {limit}\n"));
+        }
+        text.push_str("\n| link_id | freespeed_tt | observed_tt | event_tt | avg_delay | traversals |\n");
+        text.push_str("|---|---:|---:|---:|---:|---:|\n");
+        for row in rows {
+            text.push_str(&format!(
+                "| {} | {:.6} | {:.6} | {:.6} | {:.6} | {} |\n",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    text.push_str(&format!("iteration={target_iteration}\n"));
+    text.push_str(&format!("links={}\n", scenario.network.links.len()));
+    text.push_str(&format!(
+        "sort_by={}\n",
+        match sort_by {
+            NetworkSortKey::Id => "id",
+            NetworkSortKey::Delay => "delay",
+            NetworkSortKey::TravelTime => "travel-time",
+            NetworkSortKey::Traversals => "traversals",
+        }
+    ));
+    text.push_str(&format!("min_delay={:.6}\n", min_delay));
+    if let Some(limit) = limit {
+        text.push_str(&format!("limit={limit}\n"));
+    }
+    for row in rows {
+        text.push_str(&format!(
+            "link_id={} freespeed_tt={:.6} observed_tt={:.6} event_tt={:.6} avg_delay={:.6} traversals={}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5
+        ));
+    }
     emit_text(&text, output)
 }
 
