@@ -804,11 +804,11 @@ fn reroute_selected_plan_with_stats(
             .and_then(|activity| activity.link_id.as_deref());
         let next_link_id = next_activity_at(&rerouted_plan, leg_index)
             .and_then(|activity| activity.link_id.as_deref());
-        let Some(PlanElement::Leg(_)) = rerouted_plan.elements.get(leg_index) else {
+        let Some(PlanElement::Leg(existing_leg)) = rerouted_plan.elements.get(leg_index) else {
             continue;
         };
         let departure_time_s = leg_departure_time_seconds(&rerouted_plan, leg_index).unwrap_or(0.0);
-        let Some(route_node_ids) = shortest_route_node_ids_for_departure(
+        let Some(primary_route_node_ids) = shortest_route_node_ids_for_departure(
             network,
             previous_link_id,
             next_link_id,
@@ -818,6 +818,42 @@ fn reroute_selected_plan_with_stats(
         ) else {
             continue;
         };
+        let current_route_links = route_link_sequence(
+            existing_leg,
+            previous_activity_at(&rerouted_plan, leg_index),
+            next_activity_at(&rerouted_plan, leg_index),
+            network,
+        );
+        let mut penalized_link_costs = link_costs.clone();
+        for link_id in current_route_links {
+            let entry = penalized_link_costs.entry(link_id.to_string()).or_insert_with(|| {
+                network
+                    .links
+                    .get(link_id)
+                    .map(|link| link.length_m / link.freespeed_mps)
+                    .unwrap_or(0.0)
+            });
+            *entry *= 1.05;
+        }
+        let alternative_route_node_ids = shortest_route_node_ids_for_departure(
+            network,
+            previous_link_id,
+            next_link_id,
+            &penalized_link_costs,
+            link_time_profiles,
+            departure_time_s,
+        )
+        .unwrap_or_else(|| primary_route_node_ids.clone());
+        let route_node_ids = choose_better_route_candidate(
+            network,
+            previous_link_id,
+            next_link_id,
+            link_costs,
+            link_time_profiles,
+            departure_time_s,
+            &primary_route_node_ids,
+            &alternative_route_node_ids,
+        );
         let PlanElement::Leg(leg) = &mut rerouted_plan.elements[leg_index] else {
             continue;
         };
@@ -1876,6 +1912,81 @@ fn estimate_plan_score_from_link_costs(
         })
         .collect::<Vec<_>>();
     score_plan_internal(plan, scoring, network, &leg_travel_times).total_score
+}
+
+fn choose_better_route_candidate(
+    network: &Network,
+    previous_link_id: Option<&str>,
+    next_link_id: Option<&str>,
+    link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+    departure_time_s: f64,
+    primary_route_node_ids: &[String],
+    alternative_route_node_ids: &[String],
+) -> Vec<String> {
+    let primary_cost = route_node_ids_cost(
+        network,
+        previous_link_id,
+        next_link_id,
+        link_costs,
+        link_time_profiles,
+        departure_time_s,
+        primary_route_node_ids,
+    );
+    let alternative_cost = route_node_ids_cost(
+        network,
+        previous_link_id,
+        next_link_id,
+        link_costs,
+        link_time_profiles,
+        departure_time_s,
+        alternative_route_node_ids,
+    );
+    if alternative_cost + 1.0e-9 < primary_cost {
+        alternative_route_node_ids.to_vec()
+    } else {
+        primary_route_node_ids.to_vec()
+    }
+}
+
+fn route_node_ids_cost(
+    network: &Network,
+    previous_link_id: Option<&str>,
+    next_link_id: Option<&str>,
+    link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+    departure_time_s: f64,
+    route_node_ids: &[String],
+) -> f64 {
+    let probe_leg = Leg {
+        mode: "car".to_string(),
+        route_node_ids: route_node_ids.to_vec(),
+    };
+    let previous_activity = previous_link_id.map(|link_id| Activity {
+        activity_type: String::new(),
+        link_id: Some(link_id.to_string()),
+        end_time_seconds: None,
+        duration_seconds: None,
+    });
+    let next_activity = next_link_id.map(|link_id| Activity {
+        activity_type: String::new(),
+        link_id: Some(link_id.to_string()),
+        end_time_seconds: None,
+        duration_seconds: None,
+    });
+    let mut current_time_s = departure_time_s;
+    let mut total_cost_s = 0.0;
+    for link_id in route_link_sequence(
+        &probe_leg,
+        previous_activity.as_ref(),
+        next_activity.as_ref(),
+        network,
+    ) {
+        let cost_s = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
+        total_cost_s += cost_s;
+        current_time_s += cost_s;
+    }
+    total_cost_s
 }
 
 fn score_activity(
