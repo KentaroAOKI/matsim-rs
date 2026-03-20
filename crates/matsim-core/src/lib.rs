@@ -3389,6 +3389,7 @@ struct NodeCrossingResult {
 
 struct NodeCrossingDecision {
     sim_step: i64,
+    traversing_inbound_link_id: String,
     selected_inbound_link_id: Option<String>,
 }
 
@@ -3707,10 +3708,18 @@ impl QueueLinkState {
     fn cross_node(
         &mut self,
         ready_to_leave: &LinkReadyToLeave,
-        _decision: &NodeCrossingDecision,
+        decision: &NodeCrossingDecision,
     ) -> NodeCrossingResult {
-        self.node_flow_state
-            .enter_buffer(ready_to_leave.free_speed_exit_s);
+        let effective_ready_time_s = if decision.selected_inbound_link_id.as_deref().is_some_and(
+            |selected_inbound_link_id| {
+                selected_inbound_link_id != decision.traversing_inbound_link_id
+            },
+        ) {
+            (decision.sim_step + 1) as f64
+        } else {
+            ready_to_leave.free_speed_exit_s
+        };
+        self.node_flow_state.enter_buffer(effective_ready_time_s);
         let (exit_time_s, buffer_size_before_release, buffer_size_after_release) = self
             .node_flow_state
             .release_from_buffer(ready_to_leave.headway_s);
@@ -3865,6 +3874,7 @@ impl NodeSelectorState {
         );
         NodeCrossingDecision {
             sim_step,
+            traversing_inbound_link_id: default_inbound_link_id.to_string(),
             selected_inbound_link_id: Some(selected_inbound_link_id),
         }
     }
