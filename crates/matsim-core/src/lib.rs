@@ -71,6 +71,8 @@ pub struct Network {
 #[derive(Debug, Clone)]
 pub struct Link {
     pub id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
     pub length_m: f64,
     pub freespeed_mps: f64,
 }
@@ -108,7 +110,7 @@ pub struct Activity {
 #[derive(Debug, Clone)]
 pub struct Leg {
     pub mode: String,
-    pub route_link_ids: Vec<String>,
+    pub route_node_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,35 +358,15 @@ fn next_activity<'a>(plan: &'a Plan, leg: &Leg) -> Option<&'a Activity> {
 fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity: Option<&Activity>, network: &Network) -> f64 {
     let previous_link = previous_activity.and_then(|activity| activity.link_id.as_deref());
     let next_link = next_activity.and_then(|activity| activity.link_id.as_deref());
-    if leg.route_link_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
+    if leg.route_node_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
         return 0.0;
     }
 
-    let mut distance_m = 0.0_f64;
-
-    if let Some(activity) = previous_activity {
-        distance_m += activity
-            .link_id
-            .as_ref()
-            .and_then(|id| network.links.get(id))
-            .map(|link| link.length_m)
-            .unwrap_or(0.0);
-    }
-
-    for link_id in &leg.route_link_ids {
-        distance_m += network.links.get(link_id).map(|link| link.length_m).unwrap_or(0.0);
-    }
-
-    if let Some(activity) = next_activity {
-        distance_m += activity
-            .link_id
-            .as_ref()
-            .and_then(|id| network.links.get(id))
-            .map(|link| link.length_m)
-            .unwrap_or(0.0);
-    }
-
-    distance_m
+    route_link_sequence(leg, previous_activity, next_activity, network)
+        .into_iter()
+        .filter_map(|link_id| network.links.get(link_id))
+        .map(|link| link.length_m)
+        .sum()
 }
 
 fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
@@ -592,16 +574,12 @@ fn score_activity(
 fn score_leg(
     leg: &Leg,
     scoring: &ScoringConfig,
-    network: &Network,
+    _network: &Network,
     travel_time_seconds: f64,
     seen_modes: &mut BTreeMap<String, ()>,
 ) -> f64 {
-    let params = scoring
-        .mode_params
-        .get(&leg.mode)
-        .cloned()
-        .unwrap_or_default();
-    let distance_m = leg_distance_m(leg, None, None, network);
+    let params = scoring.mode_params.get(&leg.mode).cloned().unwrap_or_default();
+    let distance_m = 0.0;
     let first_mode_use = seen_modes.insert(leg.mode.clone(), ()).is_none();
 
     travel_time_seconds * params.marginal_utility_of_traveling_utils_per_hour / 3600.0
@@ -617,31 +595,73 @@ fn leg_travel_time_seconds(
 ) -> f64 {
     let previous_link = previous_activity.and_then(|activity| activity.link_id.as_deref());
     let next_link = next_activity.and_then(|activity| activity.link_id.as_deref());
-    if leg.route_link_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
+    if leg.route_node_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
         return 0.0;
     }
 
-    let mut travel_time = 0.0_f64;
-    if let Some(activity) = previous_activity {
-        if let Some(link_id) = activity.link_id.as_ref() {
-            if let Some(link) = network.links.get(link_id) {
-                travel_time += link.length_m / link.freespeed_mps;
-            }
-        }
+    route_link_sequence(leg, previous_activity, next_activity, network)
+        .into_iter()
+        .filter_map(|link_id| network.links.get(link_id))
+        .map(|link| link.length_m / link.freespeed_mps)
+        .sum()
+}
+
+fn route_link_sequence<'a>(
+    leg: &'a Leg,
+    previous_activity: Option<&'a Activity>,
+    next_activity: Option<&'a Activity>,
+    network: &'a Network,
+) -> Vec<&'a str> {
+    let previous_link_id = previous_activity.and_then(|activity| activity.link_id.as_deref());
+    let next_link_id = next_activity.and_then(|activity| activity.link_id.as_deref());
+
+    let Some(previous_link_id) = previous_link_id else {
+        return Vec::new();
+    };
+    let Some(next_link_id) = next_link_id else {
+        return Vec::new();
+    };
+
+    if leg.route_node_ids.is_empty() && previous_link_id == next_link_id {
+        return Vec::new();
     }
-    for link_id in &leg.route_link_ids {
-        if let Some(link) = network.links.get(link_id) {
-            travel_time += link.length_m / link.freespeed_mps;
-        }
+
+    let Some(previous_link) = network.links.get(previous_link_id) else {
+        return Vec::new();
+    };
+    let Some(next_link) = network.links.get(next_link_id) else {
+        return Vec::new();
+    };
+
+    let mut current_node_id = previous_link.to_node_id.as_str();
+    let mut route_nodes = leg.route_node_ids.iter().map(String::as_str).peekable();
+    let mut links = Vec::new();
+
+    if route_nodes.peek().copied() == Some(current_node_id) {
+        route_nodes.next();
     }
-    if let Some(activity) = next_activity {
-        if let Some(link_id) = activity.link_id.as_ref() {
-            if let Some(link) = network.links.get(link_id) {
-                travel_time += link.length_m / link.freespeed_mps;
-            }
-        }
+
+    for node_id in route_nodes {
+        let Some(link_id) = find_link_between_nodes(network, current_node_id, node_id) else {
+            return links;
+        };
+        links.push(link_id);
+        current_node_id = node_id;
     }
-    travel_time
+
+    if current_node_id == next_link.from_node_id {
+        links.push(next_link_id);
+    }
+
+    links
+}
+
+fn find_link_between_nodes<'a>(network: &'a Network, from_node_id: &str, to_node_id: &str) -> Option<&'a str> {
+    network
+        .links
+        .values()
+        .find(|link| link.from_node_id == from_node_id && link.to_node_id == to_node_id)
+        .map(|link| link.id.as_str())
 }
 
 #[cfg(test)]
@@ -649,13 +669,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn leg_distance_uses_route_and_boundary_links() {
+    fn leg_distance_uses_route_nodes_and_end_link() {
         let mut network = Network::default();
-        for (id, length) in [("1", 10.0), ("2", 20.0), ("3", 30.0)] {
+        for (id, from_node_id, to_node_id, length) in [
+            ("1", "n0", "n1", 10.0),
+            ("2", "n1", "n2", 20.0),
+            ("3", "n2", "n3", 30.0),
+        ] {
             network.links.insert(
                 id.to_string(),
                 Link {
                     id: id.to_string(),
+                    from_node_id: from_node_id.to_string(),
+                    to_node_id: to_node_id.to_string(),
                     length_m: length,
                     freespeed_mps: 1.0,
                 },
@@ -676,10 +702,10 @@ mod tests {
         };
         let leg = Leg {
             mode: "car".to_string(),
-            route_link_ids: vec!["2".to_string()],
+            route_node_ids: vec!["n1".to_string(), "n2".to_string()],
         };
 
-        assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 60.0);
+        assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 50.0);
     }
 
     #[test]
@@ -689,6 +715,8 @@ mod tests {
             "1".to_string(),
             Link {
                 id: "1".to_string(),
+                from_node_id: "n0".to_string(),
+                to_node_id: "n1".to_string(),
                 length_m: 10.0,
                 freespeed_mps: 1.0,
             },
@@ -708,7 +736,7 @@ mod tests {
         };
         let leg = Leg {
             mode: "car".to_string(),
-            route_link_ids: vec![],
+            route_node_ids: vec![],
         };
 
         assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 0.0);

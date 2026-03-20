@@ -218,6 +218,8 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
         })? {
             Event::Empty(ref e) if e.name().as_ref() == b"link" => {
                 let id = attr_string(path, e, b"id")?.unwrap_or_default();
+                let from_node_id = attr_string(path, e, b"from")?.unwrap_or_default();
+                let to_node_id = attr_string(path, e, b"to")?.unwrap_or_default();
                 let length_m = attr_string(path, e, b"length")?
                     .as_deref()
                     .map(|value| parse_f64(path, value))
@@ -233,6 +235,8 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
                     id.clone(),
                     Link {
                         id,
+                        from_node_id,
+                        to_node_id,
                         length_m,
                         freespeed_mps,
                     },
@@ -305,7 +309,7 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
                 if let Some(plan) = current_plan.as_mut() {
                     plan.elements.push(PlanElement::Leg(Leg {
                         mode: attr_string(path, e, b"mode")?.unwrap_or_else(|| "unknown".to_string()),
-                        route_link_ids: Vec::new(),
+                        route_node_ids: Vec::new(),
                     }));
                 }
             }
@@ -320,7 +324,7 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
                 inside_route = false;
                 if let Some(plan) = current_plan.as_mut() {
                     if let Some(PlanElement::Leg(leg)) = plan.elements.last_mut() {
-                        leg.route_link_ids = route_buffer
+                        leg.route_node_ids = route_buffer
                             .split_whitespace()
                             .map(|id| id.to_string())
                             .collect();
@@ -473,5 +477,25 @@ mod tests {
             .join("matsim-libs/examples/scenarios/equil/network.xml");
         let network = load_network(&root).unwrap();
         assert_eq!(network.links.get("1").unwrap().freespeed_mps, 27.78);
+        assert_eq!(network.links.get("1").unwrap().to_node_id, "2");
+    }
+
+    #[test]
+    fn loads_equil_v4_route_as_nodes() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-libs/examples/scenarios/equil/plans100.xml");
+        let population = load_population(&root).unwrap();
+        let first_person = &population.persons[0];
+        let first_leg = first_person
+            .selected_plan
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                PlanElement::Leg(leg) => Some(leg),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(first_leg.route_node_ids, vec!["2", "7", "12"]);
     }
 }
