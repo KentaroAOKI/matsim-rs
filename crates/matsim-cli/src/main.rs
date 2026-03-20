@@ -130,6 +130,18 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    InspectRerouteScores {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        iteration: Option<u32>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     AnalyzeEvents {
         #[arg(long)]
         config: PathBuf,
@@ -283,6 +295,13 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_reroutes_command(&config, iteration, limit, min_score_delta, csv, markdown, output),
+        Command::InspectRerouteScores {
+            config,
+            iteration,
+            limit,
+            markdown,
+            output,
+        } => inspect_reroute_scores_command(&config, iteration, limit, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
         Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
@@ -1046,6 +1065,101 @@ fn inspect_reroutes_command(
     emit_text(&text, output)
 }
 
+fn inspect_reroute_scores_command(
+    config_path: &Path,
+    iteration: Option<u32>,
+    limit: Option<usize>,
+    markdown: bool,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (run_output, _) = run_iterations_with_state(&scenario);
+    let target_iteration = iteration.unwrap_or(run_output.last_iteration);
+    let selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == target_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: target_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+    let scenario_before = resolve_scenario_before_iteration(config_path, target_iteration)?;
+
+    let mut aggregates = std::collections::BTreeMap::<String, (String, f64, usize, usize)>::new();
+    for detail in &selected.replanning_summary.reroute_details {
+        let breakdown = explain_person_reroute_score(&scenario_before, &detail.person_id)
+            .ok_or_else(|| CliError::PersonNotFound(detail.person_id.clone()))?;
+        for (component_index, item) in breakdown.items.into_iter().enumerate() {
+            let key = format!("{:02}:{}", component_index, item.label);
+            let entry = aggregates
+                .entry(key)
+                .or_insert((item.label, 0.0, 0, 0));
+            entry.1 += item.delta;
+            entry.2 += 1;
+            if item.delta > 0.0 {
+                entry.3 += 1;
+            }
+        }
+    }
+
+    let mut rows = aggregates
+        .into_iter()
+        .map(|(component, (label, total_delta, count, positive_count))| {
+            (
+                component,
+                label,
+                total_delta,
+                if count > 0 { total_delta / count as f64 } else { 0.0 },
+                count,
+                positive_count,
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| right.2.total_cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    let mut text = String::new();
+    if markdown {
+        text.push_str("# Reroute Score Components\n");
+        text.push_str(&format!("\n- iteration: {target_iteration}\n"));
+        text.push_str(&format!(
+            "- rerouted_persons: {}\n",
+            selected.replanning_summary.reroute_details.len()
+        ));
+        if let Some(limit) = limit {
+            text.push_str(&format!("- limit: {limit}\n"));
+        }
+        text.push_str("\n| component | label | total_delta | avg_delta | count | positive_count |\n");
+        text.push_str("|---|---|---:|---:|---:|---:|\n");
+        for row in rows {
+            text.push_str(&format!(
+                "| {} | {} | {:.6} | {:.6} | {} | {} |\n",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    text.push_str(&format!("iteration={target_iteration}\n"));
+    text.push_str(&format!(
+        "rerouted_persons={}\n",
+        selected.replanning_summary.reroute_details.len()
+    ));
+    if let Some(limit) = limit {
+        text.push_str(&format!("limit={limit}\n"));
+    }
+    text.push_str("component;label;total_delta;avg_delta;count;positive_count\n");
+    for row in rows {
+        text.push_str(&format!(
+            "{};{};{:.6};{:.6};{};{}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5
+        ));
+    }
+    emit_text(&text, output)
+}
+
 fn emit_text(text: &str, output: Option<PathBuf>) -> Result<(), CliError> {
     if let Some(path) = output {
         fs::write(&path, text).map_err(|source| CliError::ReadFile {
@@ -1068,4 +1182,15 @@ fn resolve_scenario_for_iteration(config_path: &Path, iteration: Option<u32>) ->
     } else {
         Ok(scenario)
     }
+}
+
+fn resolve_scenario_before_iteration(config_path: &Path, iteration: u32) -> Result<matsim_core::Scenario, CliError> {
+    if iteration == 0 {
+        return load_scenario(config_path).map_err(CliError::from);
+    }
+    let scenario = load_scenario(config_path)?;
+    let mut scenario_for_run = scenario.clone();
+    scenario_for_run.config.last_iteration = (iteration - 1).min(scenario_for_run.config.last_iteration);
+    let (_, final_state) = run_iterations_with_state(&scenario_for_run);
+    Ok(final_state)
 }
