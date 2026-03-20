@@ -162,6 +162,7 @@ pub struct IterationOutput {
     pub mode_stats: Vec<ModeStat>,
     pub travel_distance_stats: TravelDistanceStats,
     pub score_stats: ScoreStats,
+    pub person_score_stats: Vec<PersonScoreStat>,
     pub plan_memory_stats: PlanMemoryStats,
     pub observed_link_costs: Vec<LinkCostStat>,
     pub observed_link_profiles: Vec<LinkProfileStat>,
@@ -262,6 +263,15 @@ pub struct ScoreStats {
     pub avg_worst: f64,
     pub avg_average: f64,
     pub avg_best: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonScoreStat {
+    pub person_id: String,
+    pub executed: f64,
+    pub worst: f64,
+    pub average: f64,
+    pub best: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -554,6 +564,19 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         avg_average,
         avg_best,
     };
+    let person_score_stats = scenario
+        .population
+        .persons
+        .iter()
+        .zip(state.person_stats.iter())
+        .map(|(person, stats)| PersonScoreStat {
+            person_id: person.id.clone(),
+            executed: stats.last_executed,
+            worst: stats.worst,
+            average: stats.sum / stats.count as f64,
+            best: stats.best,
+        })
+        .collect();
     let total_plans = scenario
         .population
         .persons
@@ -621,6 +644,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         mode_stats,
         travel_distance_stats,
         score_stats,
+        person_score_stats,
         plan_memory_stats,
         observed_link_costs,
         observed_link_profiles,
@@ -1165,6 +1189,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     })?;
 
     write_scorestats(&output_dir.join("scorestats.csv"), output)?;
+    write_person_scorestats(&output_dir.join("person_scorestats.csv"), output)?;
     write_planstats(&output_dir.join("planstats.csv"), output)?;
     write_modestats(&output_dir.join("modestats.csv"), output)?;
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
@@ -1536,6 +1561,23 @@ fn write_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
             iteration.score_stats.avg_best
         )
         .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn write_person_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;person_id;executed;worst;average;best")
+        .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for stat in &iteration.person_score_stats {
+            writeln!(
+                writer,
+                "{};{};{:.6};{:.6};{:.6};{:.6}",
+                iteration.iteration, stat.person_id, stat.executed, stat.worst, stat.average, stat.best
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
     }
     Ok(())
 }
