@@ -38,6 +38,14 @@ enum Command {
         #[arg(long)]
         iteration: Option<u32>,
     },
+    ExplainLink {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        link_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
+    },
     ExplainReroute {
         #[arg(long)]
         config: PathBuf,
@@ -134,6 +142,10 @@ enum CliError {
     },
     #[error("person `{0}` not found")]
     PersonNotFound(String),
+    #[error("link `{0}` not found")]
+    LinkNotFound(String),
+    #[error("iteration `{requested}` not found; available through `{last_available}`")]
+    IterationNotFound { requested: u32, last_available: u32 },
 }
 
 fn main() {
@@ -153,6 +165,11 @@ fn run() -> Result<(), CliError> {
             person_id,
             iteration,
         } => explain_command(&config, &person_id, iteration),
+        Command::ExplainLink {
+            config,
+            link_id,
+            iteration,
+        } => explain_link_command(&config, &link_id, iteration),
         Command::ExplainReroute {
             config,
             person_id,
@@ -367,6 +384,50 @@ fn explain_command(config_path: &Path, person_id: &str, iteration: Option<u32>) 
             item.label, item.start_time_seconds, item.end_time_seconds, item.score
         );
     }
+    Ok(())
+}
+
+fn explain_link_command(config_path: &Path, link_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (output, _) = run_iterations_with_state(&scenario);
+    let target_iteration = iteration.unwrap_or(output.last_iteration);
+    let selected = output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == target_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: target_iteration,
+            last_available: output.last_iteration,
+        })?;
+    let link = scenario
+        .network
+        .links
+        .get(link_id)
+        .ok_or_else(|| CliError::LinkNotFound(link_id.to_string()))?;
+    let event_groups = vec![(selected.iteration, selected.events.clone())];
+    let event_stat = analyze_link_event_groups(&event_groups)
+        .into_iter()
+        .find(|candidate| candidate.link_id == link_id);
+    let observed_travel_time = selected
+        .observed_link_costs
+        .iter()
+        .find(|candidate| candidate.link_id == link_id)
+        .map(|candidate| candidate.travel_time_seconds)
+        .unwrap_or(link.length_m / link.freespeed_mps);
+    let freespeed_travel_time = link.length_m / link.freespeed_mps;
+
+    println!("link_id={link_id}");
+    println!("iteration={target_iteration}");
+    println!("freespeed_travel_time_seconds={:.6}", freespeed_travel_time);
+    println!("observed_travel_time_seconds={:.6}", observed_travel_time);
+    if let Some(event_stat) = event_stat {
+        println!("event_travel_time_seconds={:.6}", event_stat.avg_travel_time_seconds);
+        println!("traversals={}", event_stat.traversals);
+    } else {
+        println!("event_travel_time_seconds={:.6}", freespeed_travel_time);
+        println!("traversals=0");
+    }
+    println!("avg_delay_seconds={:.6}", (observed_travel_time - freespeed_travel_time).max(0.0));
     Ok(())
 }
 
