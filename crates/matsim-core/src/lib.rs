@@ -942,12 +942,11 @@ fn reroute_selected_plan_with_stats(
     if rerouted {
         let current_breakdown =
             score_plan_internal(&original_plan, scoring, network, current_leg_travel_times);
-        let estimated_rerouted_score =
-            estimate_plan_score_from_link_costs(&rerouted_plan, scoring, network, link_costs);
         let rerouted_leg_travel_times =
             estimate_plan_leg_travel_times_from_link_costs(&rerouted_plan, network, link_costs, link_time_profiles);
         let rerouted_breakdown =
             score_plan_internal(&rerouted_plan, scoring, network, &rerouted_leg_travel_times);
+        let estimated_rerouted_score = rerouted_breakdown.total_score;
         rerouted_plan.score = None;
         person.plans.push(rerouted_plan);
         person.selected_plan_index = person.plans.len() - 1;
@@ -1036,6 +1035,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_replanningstats(&output_dir.join("replanningstats.csv"), output)?;
     write_reroutestats(&output_dir.join("reroutestats.csv"), output)?;
     write_reroute_scorestats(&output_dir.join("reroute_scorestats.csv"), output)?;
+    write_reroute_componentstats(&output_dir.join("reroute_componentstats.csv"), output)?;
     Ok(())
 }
 
@@ -1640,6 +1640,46 @@ fn write_reroute_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreE
     Ok(())
 }
 
+fn write_reroute_componentstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;component;label;total_score_delta;avg_score_delta;count;zero_delta_count"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        let mut aggregates = BTreeMap::<(String, String), (f64, usize, usize)>::new();
+        for detail in &iteration.replanning_summary.reroute_details {
+            for component in &detail.score_components {
+                let entry = aggregates
+                    .entry((component.component.clone(), component.label.clone()))
+                    .or_insert((0.0, 0, 0));
+                entry.0 += component.delta;
+                entry.1 += 1;
+                if component.delta.abs() <= 1.0e-9 {
+                    entry.2 += 1;
+                }
+            }
+        }
+
+        for ((component, label), (total_score_delta, count, zero_delta_count)) in aggregates {
+            writeln!(
+                writer,
+                "{};{};{};{:.6};{:.6};{};{}",
+                iteration.iteration,
+                component,
+                label,
+                total_score_delta,
+                if count > 0 { total_score_delta / count as f64 } else { 0.0 },
+                count,
+                zero_delta_count
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
 fn csv_writer(path: &Path) -> Result<BufWriter<File>, CoreError> {
     let file = File::create(path).map_err(|source| write_error(path, source))?;
     Ok(BufWriter::new(file))
@@ -2096,16 +2136,6 @@ fn score_plan_internal(
         total_score: score,
         items,
     }
-}
-
-fn estimate_plan_score_from_link_costs(
-    plan: &Plan,
-    scoring: &ScoringConfig,
-    network: &Network,
-    link_costs: &BTreeMap<String, f64>,
-) -> f64 {
-    let leg_travel_times = estimate_plan_leg_travel_times_from_link_costs(plan, network, link_costs, &BTreeMap::new());
-    score_plan_internal(plan, scoring, network, &leg_travel_times).total_score
 }
 
 fn estimate_plan_leg_travel_times_from_link_costs(
