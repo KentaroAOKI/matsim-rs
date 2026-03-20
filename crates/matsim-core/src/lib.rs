@@ -655,11 +655,19 @@ fn is_innovation_strategy(strategy_name: &str) -> bool {
 }
 
 fn replanning_draw(random_seed: u64, iteration: u32, person_id: &str) -> f64 {
-    let mut hash = random_seed ^ (u64::from(iteration) << 32);
+    let mut hash = random_seed
+        .wrapping_add(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(u64::from(iteration) << 32);
     for byte in person_id.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(1_099_511_628_211);
+        hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        hash ^= hash >> 32;
     }
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
     (hash as f64) / ((u64::MAX as f64) + 1.0)
 }
 

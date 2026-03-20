@@ -387,14 +387,34 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
     ] {
         let left_path = left.join(name);
         let right_path = right.join(name);
-        let left_text = fs::read_to_string(&left_path).map_err(|source| CliError::ReadFile {
-            path: left_path.display().to_string(),
-            source,
-        })?;
-        let right_text = fs::read_to_string(&right_path).map_err(|source| CliError::ReadFile {
-            path: right_path.display().to_string(),
-            source,
-        })?;
+        let left_text = match fs::read_to_string(&left_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                println!("== {name} ==");
+                println!("skipped: missing left file {}", left_path.display());
+                continue;
+            }
+            Err(source) => {
+                return Err(CliError::ReadFile {
+                    path: left_path.display().to_string(),
+                    source,
+                })
+            }
+        };
+        let right_text = match fs::read_to_string(&right_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                println!("== {name} ==");
+                println!("skipped: missing right file {}", right_path.display());
+                continue;
+            }
+            Err(source) => {
+                return Err(CliError::ReadFile {
+                    path: right_path.display().to_string(),
+                    source,
+                })
+            }
+        };
 
         println!("== {name} ==");
         if left_text == right_text {
