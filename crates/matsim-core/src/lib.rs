@@ -3880,6 +3880,19 @@ impl QueueSimulationState {
         self.pending_node_offers.remove(offer_index)
     }
 
+    fn dequeue_owner_pending_offer_from_batch(
+        &mut self,
+        batch: &NodeStepOfferBatch,
+        owner_inbound_link_id: &str,
+    ) -> Option<PendingNodeOffer> {
+        let offer_index = self.pending_node_offers.iter().position(|offer| {
+            offer.to_node_id == batch.to_node_id
+                && offer.sim_step == batch.sim_step
+                && offer.inbound_link_id == owner_inbound_link_id
+        })?;
+        self.pending_node_offers.remove(offer_index)
+    }
+
     fn snapshot_node_offers(&self, to_node_id: &str, sim_step: i64) -> NodeOfferSnapshot {
         let mut snapshot = NodeOfferSnapshot::default();
         for offer in &self.pending_node_offers {
@@ -4105,9 +4118,17 @@ impl QueueSimulationState {
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
     ) -> Option<PreparedFollowupCrossing> {
-        let prepared_crossing =
-            self.prepare_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
-        prepared_crossing.pending_offer.as_ref()?;
+        let node_step_batch = self.matching_node_step_batch(to_node_id, ready_to_leave)?;
+        let pending_offer =
+            self.dequeue_owner_pending_offer_from_batch(&node_step_batch, inbound_link_id)?;
+        let prepared_crossing = PreparedNodeCrossing {
+            decision: NodeCrossingDecision {
+                sim_step: node_step_batch.sim_step,
+                traversing_inbound_link_id: inbound_link_id.to_string(),
+                selected_inbound_link_id: Some(inbound_link_id.to_string()),
+            },
+            pending_offer: Some(pending_offer),
+        };
         Some(PreparedFollowupCrossing {
             prepared_crossing,
             ready_to_leave: LinkReadyToLeave {
