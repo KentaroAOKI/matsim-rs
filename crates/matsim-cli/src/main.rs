@@ -159,6 +159,26 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    InspectQueueChain {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        from_iteration: u32,
+        #[arg(long)]
+        from_link_id: String,
+        #[arg(long)]
+        to_iteration: u32,
+        #[arg(long)]
+        to_link_id: String,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        csv: bool,
+        #[arg(long)]
+        markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     AnalyzeEvents {
         #[arg(long)]
         config: PathBuf,
@@ -347,6 +367,27 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_bottleneck_command(&config, &link_id, iteration, limit, csv, markdown, output),
+        Command::InspectQueueChain {
+            config,
+            from_iteration,
+            from_link_id,
+            to_iteration,
+            to_link_id,
+            limit,
+            csv,
+            markdown,
+            output,
+        } => inspect_queue_chain_command(
+            &config,
+            from_iteration,
+            &from_link_id,
+            to_iteration,
+            &to_link_id,
+            limit,
+            csv,
+            markdown,
+            output,
+        ),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
         Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
@@ -1413,6 +1454,166 @@ fn inspect_bottleneck_command(
         text.push_str(&format!(
             "{};{};{};{:.6};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}\n",
             row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10
+        ));
+    }
+    emit_text(&text, output)
+}
+
+fn inspect_queue_chain_command(
+    config_path: &Path,
+    from_iteration: u32,
+    from_link_id: &str,
+    to_iteration: u32,
+    to_link_id: &str,
+    limit: Option<usize>,
+    csv: bool,
+    markdown: bool,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (run_output, _) = run_iterations_with_state(&scenario);
+    let from_selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == from_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: from_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+    let to_selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == to_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: to_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+
+    let from_scores = from_selected
+        .person_score_stats
+        .iter()
+        .map(|stat| (stat.person_id.clone(), stat))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let to_scores = to_selected
+        .person_score_stats
+        .iter()
+        .map(|stat| (stat.person_id.clone(), stat))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let to_reroute_scores = to_selected
+        .replanning_summary
+        .reroute_details
+        .iter()
+        .map(|detail| {
+            (
+                detail.person_id.clone(),
+                detail.estimated_rerouted_score - detail.previous_score,
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let to_traversals = to_selected
+        .link_traversals
+        .iter()
+        .filter(|traversal| traversal.link_id == to_link_id)
+        .map(|traversal| (traversal.person_id.clone(), traversal))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut rows = from_selected
+        .link_traversals
+        .iter()
+        .filter(|traversal| traversal.link_id == from_link_id)
+        .filter_map(|from_traversal| {
+            let to_traversal = to_traversals.get(&from_traversal.person_id)?;
+            let from_queue_delay = (from_traversal.queue_exit_time_seconds
+                - from_traversal.free_speed_exit_time_seconds)
+                .max(0.0);
+            let to_queue_delay = (to_traversal.queue_exit_time_seconds
+                - to_traversal.free_speed_exit_time_seconds)
+                .max(0.0);
+            let from_score = from_scores.get(&from_traversal.person_id);
+            let to_score = to_scores.get(&from_traversal.person_id);
+            Some((
+                from_traversal.same_enter_rank,
+                from_traversal.person_id.clone(),
+                from_queue_delay,
+                to_queue_delay,
+                from_traversal.queue_exit_time_seconds,
+                to_traversal.enter_time_seconds,
+                from_score.map(|value| value.executed).unwrap_or(0.0),
+                to_score.map(|value| value.executed).unwrap_or(0.0),
+                to_score.map(|value| value.worst).unwrap_or(0.0),
+                to_score.map(|value| value.average).unwrap_or(0.0),
+                to_score.map(|value| value.best).unwrap_or(0.0),
+                to_reroute_scores
+                    .get(&from_traversal.person_id)
+                    .copied()
+                    .unwrap_or(0.0),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    let mut text = String::new();
+    if csv {
+        text.push_str("from_rank;person_id;from_queue_delay_seconds;to_queue_delay_seconds;from_queue_exit_time_seconds;to_enter_time_seconds;from_executed;to_executed;to_worst;to_average;to_best;to_estimated_reroute_score_delta\n");
+        for row in rows {
+            text.push_str(&format!(
+                "{};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}\n",
+                row.0,
+                row.1,
+                row.2,
+                row.3,
+                row.4,
+                row.5,
+                row.6,
+                row.7,
+                row.8,
+                row.9,
+                row.10,
+                row.11
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    if markdown {
+        text.push_str("# Queue Chain Inspection\n");
+        text.push_str(&format!(
+            "\n- from: iteration {from_iteration} link {from_link_id}\n"
+        ));
+        text.push_str(&format!(
+            "- to: iteration {to_iteration} link {to_link_id}\n"
+        ));
+        text.push_str(&format!("- matched_persons: {}\n", rows.len()));
+        if let Some(limit) = limit {
+            text.push_str(&format!("- limit: {limit}\n"));
+        }
+        text.push_str("\n| from_rank | person_id | from_delay | to_delay | from_exit | to_enter | from_executed | to_executed | to_worst | to_average | to_best | reroute_delta |\n");
+        text.push_str("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for row in rows {
+            text.push_str(&format!(
+                "| {} | {} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} |\n",
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    text.push_str(&format!("from_iteration={from_iteration}\n"));
+    text.push_str(&format!("from_link_id={from_link_id}\n"));
+    text.push_str(&format!("to_iteration={to_iteration}\n"));
+    text.push_str(&format!("to_link_id={to_link_id}\n"));
+    if let Some(limit) = limit {
+        text.push_str(&format!("limit={limit}\n"));
+    }
+    text.push_str("from_rank;person_id;from_queue_delay_seconds;to_queue_delay_seconds;from_queue_exit_time_seconds;to_enter_time_seconds;from_executed;to_executed;to_worst;to_average;to_best;to_estimated_reroute_score_delta\n");
+    for row in rows {
+        text.push_str(&format!(
+            "{};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11
         ));
     }
     emit_text(&text, output)
