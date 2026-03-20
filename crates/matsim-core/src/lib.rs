@@ -192,6 +192,16 @@ pub struct RerouteStat {
     pub rerouted_links: String,
     pub previous_score: f64,
     pub estimated_rerouted_score: f64,
+    pub score_components: Vec<RerouteScoreComponentStat>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RerouteScoreComponentStat {
+    pub component: String,
+    pub label: String,
+    pub current_score: f64,
+    pub rerouted_score: f64,
+    pub delta: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -545,6 +555,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         apply_replanning_hook(
             scenario,
             &executed_scores,
+            &simulation.leg_times,
             &simulation.observed_link_costs,
             &simulation.observed_link_time_profiles,
             iteration,
@@ -592,6 +603,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
 fn apply_replanning_hook(
     scenario: &mut Scenario,
     executed_scores: &[f64],
+    leg_times: &[Vec<f64>],
     observed_link_costs: &BTreeMap<String, f64>,
     observed_link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
     iteration: u32,
@@ -644,11 +656,12 @@ fn apply_replanning_hook(
             applied: 0,
         })
         .collect::<Vec<_>>();
-    for (person, executed_score) in scenario
+    for ((person, executed_score), person_leg_times) in scenario
         .population
         .persons
         .iter_mut()
         .zip(executed_scores.iter().copied())
+        .zip(leg_times.iter())
     {
         let Some(strategy_name) = select_strategy(
             &scenario.config.replanning.strategies,
@@ -673,6 +686,7 @@ fn apply_replanning_hook(
                     person,
                     &scenario.network,
                     &scenario.config.scoring,
+                    person_leg_times,
                     observed_link_costs,
                     observed_link_time_profiles,
                     executed_score,
@@ -844,6 +858,7 @@ fn reroute_selected_plan_with_stats(
     person: &mut Person,
     network: &Network,
     scoring: &ScoringConfig,
+    current_leg_travel_times: &[f64],
     link_costs: &BTreeMap<String, f64>,
     link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
     previous_score: f64,
@@ -925,8 +940,14 @@ fn reroute_selected_plan_with_stats(
     }
 
     if rerouted {
+        let current_breakdown =
+            score_plan_internal(&original_plan, scoring, network, current_leg_travel_times);
         let estimated_rerouted_score =
             estimate_plan_score_from_link_costs(&rerouted_plan, scoring, network, link_costs);
+        let rerouted_leg_travel_times =
+            estimate_plan_leg_travel_times_from_link_costs(&rerouted_plan, network, link_costs, link_time_profiles);
+        let rerouted_breakdown =
+            score_plan_internal(&rerouted_plan, scoring, network, &rerouted_leg_travel_times);
         rerouted_plan.score = None;
         person.plans.push(rerouted_plan);
         person.selected_plan_index = person.plans.len() - 1;
@@ -971,12 +992,26 @@ fn reroute_selected_plan_with_stats(
             })
             .collect::<Vec<_>>()
             .join("|");
+        let score_components = current_breakdown
+            .items
+            .iter()
+            .zip(rerouted_breakdown.items.iter())
+            .enumerate()
+            .map(|(component_index, (current, rerouted))| RerouteScoreComponentStat {
+                component: format!("{:02}:{}", component_index, current.label),
+                label: current.label.clone(),
+                current_score: current.score,
+                rerouted_score: rerouted.score,
+                delta: rerouted.score - current.score,
+            })
+            .collect();
         return Some(RerouteStat {
             person_id: person.id.clone(),
             previous_links,
             rerouted_links,
             previous_score,
             estimated_rerouted_score,
+            score_components,
         });
     }
 
@@ -1000,6 +1035,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
     write_replanningstats(&output_dir.join("replanningstats.csv"), output)?;
     write_reroutestats(&output_dir.join("reroutestats.csv"), output)?;
+    write_reroute_scorestats(&output_dir.join("reroute_scorestats.csv"), output)?;
     Ok(())
 }
 
@@ -1571,6 +1607,34 @@ fn write_reroutestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> 
                 detail.estimated_rerouted_score - detail.previous_score
             )
             .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_reroute_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;person_id;component;label;current_score;rerouted_score;score_delta"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for detail in &iteration.replanning_summary.reroute_details {
+            for component in &detail.score_components {
+                writeln!(
+                    writer,
+                    "{};{};{};{};{:.6};{:.6};{:.6}",
+                    iteration.iteration,
+                    detail.person_id,
+                    component.component,
+                    component.label,
+                    component.current_score,
+                    component.rerouted_score,
+                    component.delta
+                )
+                .map_err(|source| write_error(path, source))?;
+            }
         }
     }
     Ok(())
@@ -2557,7 +2621,7 @@ mod tests {
         };
 
         let summary =
-            apply_replanning_hook(&mut scenario, &[1.0], &BTreeMap::new(), &BTreeMap::new(), 0);
+            apply_replanning_hook(&mut scenario, &[1.0], &[Vec::new()], &BTreeMap::new(), &BTreeMap::new(), 0);
 
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(scenario.population.persons[0].selected_plan_index, 1);
@@ -2667,6 +2731,7 @@ mod tests {
         let summary = apply_replanning_hook(
             &mut scenario,
             &[0.0],
+            &simulation.leg_times,
             &simulation.observed_link_costs,
             &simulation.observed_link_time_profiles,
             0,
@@ -2786,6 +2851,7 @@ mod tests {
         let summary = apply_replanning_hook(
             &mut scenario,
             &[0.0, 0.0],
+            &simulation.leg_times,
             &simulation.observed_link_costs,
             &simulation.observed_link_time_profiles,
             0,
@@ -2887,6 +2953,7 @@ mod tests {
         let summary = apply_replanning_hook(
             &mut scenario,
             &[100.0],
+            &simulation.leg_times,
             &simulation.observed_link_costs,
             &simulation.observed_link_time_profiles,
             0,
