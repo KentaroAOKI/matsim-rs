@@ -107,10 +107,15 @@ impl Person {
     pub fn selected_plan(&self) -> &Plan {
         &self.plans[self.selected_plan_index]
     }
+
+    pub fn selected_plan_mut(&mut self) -> &mut Plan {
+        &mut self.plans[self.selected_plan_index]
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
+    pub score: Option<f64>,
     pub elements: Vec<PlanElement>,
 }
 
@@ -225,14 +230,16 @@ pub enum CoreError {
 use thiserror::Error;
 
 pub fn run_single_iteration(scenario: &Scenario) -> IterationOutput {
+    let mut scenario = scenario.clone();
     let mut state = SimulationState::new(scenario.population.persons.len());
-    run_iteration(scenario, &mut state, 0)
+    run_iteration(&mut scenario, &mut state, 0)
 }
 
 pub fn run_iterations(scenario: &Scenario) -> RunOutput {
+    let mut scenario = scenario.clone();
     let mut state = SimulationState::new(scenario.population.persons.len());
     let iterations = (0..=scenario.config.last_iteration)
-        .map(|iteration| run_iteration(scenario, &mut state, iteration))
+        .map(|iteration| run_iteration(&mut scenario, &mut state, iteration))
         .collect();
 
     RunOutput {
@@ -258,7 +265,7 @@ impl SimulationState {
     }
 }
 
-fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u32) -> IterationOutput {
+fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration: u32) -> IterationOutput {
     let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
@@ -359,7 +366,7 @@ fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u3
         avg_average,
         avg_best,
     };
-    let replanning_summary = apply_replanning_hook(scenario, iteration);
+    let replanning_summary = apply_replanning_hook(scenario, &executed_scores, iteration);
 
     IterationOutput {
         iteration,
@@ -370,7 +377,16 @@ fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u3
     }
 }
 
-fn apply_replanning_hook(scenario: &Scenario, iteration: u32) -> ReplanningSummary {
+fn apply_replanning_hook(scenario: &mut Scenario, executed_scores: &[f64], iteration: u32) -> ReplanningSummary {
+    for (person, executed_score) in scenario
+        .population
+        .persons
+        .iter_mut()
+        .zip(executed_scores.iter().copied())
+    {
+        person.selected_plan_mut().score = Some(executed_score);
+    }
+
     if iteration >= scenario.config.last_iteration {
         return ReplanningSummary {
             strategies_considered: scenario.config.replanning.strategies.len(),
@@ -378,10 +394,34 @@ fn apply_replanning_hook(scenario: &Scenario, iteration: u32) -> ReplanningSumma
         };
     }
 
-    // Placeholder hook for future BestScore/ReRoute implementations.
+    let mut persons_replanned = 0usize;
+    if scenario
+        .config
+        .replanning
+        .strategies
+        .iter()
+        .any(|strategy| strategy.name == "BestScore")
+    {
+        for person in &mut scenario.population.persons {
+            let current_index = person.selected_plan_index;
+            let best_index = person
+                .plans
+                .iter()
+                .enumerate()
+                .filter_map(|(index, plan)| plan.score.map(|score| (index, score)))
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .map(|(index, _)| index)
+                .unwrap_or(current_index);
+            if best_index != current_index {
+                person.selected_plan_index = best_index;
+                persons_replanned += 1;
+            }
+        }
+    }
+
     ReplanningSummary {
         strategies_considered: scenario.config.replanning.strategies.len(),
-        persons_replanned: 0,
+        persons_replanned,
     }
 }
 
