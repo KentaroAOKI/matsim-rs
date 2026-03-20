@@ -3507,6 +3507,7 @@ fn simulate_link_traversal(
         .or_default();
     queue_node_state.register_inbound_link(link_id);
     let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
+    queue_node_state.note_ready_vehicle(link_id);
     let decision = queue_node_state.prepare_crossing(link_id, &ready_to_leave);
     let crossing = queue_link_state.cross_node(&ready_to_leave, &decision);
     queue_node_state.finish_crossing(decision);
@@ -3674,7 +3675,8 @@ struct NodeBufferState {
 
 #[derive(Debug, Default)]
 struct NodeOfferingBufferState {
-    pending_inbound_links: VecDeque<String>,
+    registered_inbound_links: VecDeque<String>,
+    ready_vehicle_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -3727,6 +3729,10 @@ impl QueueNodeState {
             .register_inbound_link(link_id, &self.offering_buffer_state);
     }
 
+    fn note_ready_vehicle(&mut self, link_id: &str) {
+        self.offering_buffer_state.note_ready_vehicle(link_id);
+    }
+
     fn prepare_crossing(
         &mut self,
         default_inbound_link_id: &str,
@@ -3742,7 +3748,8 @@ impl QueueNodeState {
 
     fn finish_crossing(&mut self, decision: NodeCrossingDecision) {
         self.selector_window_state.sim_step = Some(decision.sim_step);
-        self.offering_buffer_state.note_ready_vehicle();
+        self.offering_buffer_state
+            .release_selected_vehicle(decision.selected_inbound_link_id.as_deref());
         self.selector_state
             .refresh_after_crossing(decision, &self.offering_buffer_state);
     }
@@ -3797,17 +3804,31 @@ impl NodeBufferState {
 impl NodeOfferingBufferState {
     fn register_inbound_link(&mut self, link_id: &str) {
         if self
-            .pending_inbound_links
+            .registered_inbound_links
             .iter()
             .all(|pending_link_id| pending_link_id != link_id)
         {
-            self.pending_inbound_links.push_back(link_id.to_string());
+            self.registered_inbound_links.push_back(link_id.to_string());
         }
     }
 
-    fn note_ready_vehicle(&mut self) {
-        if let Some(inbound_link_id) = self.pending_inbound_links.pop_front() {
-            self.pending_inbound_links.push_back(inbound_link_id);
+    fn note_ready_vehicle(&mut self, link_id: &str) {
+        *self
+            .ready_vehicle_counts
+            .entry(link_id.to_string())
+            .or_default() += 1;
+    }
+
+    fn release_selected_vehicle(&mut self, selected_inbound_link_id: Option<&str>) {
+        let Some(selected_inbound_link_id) = selected_inbound_link_id else {
+            return;
+        };
+        let Some(ready_count) = self.ready_vehicle_counts.get_mut(selected_inbound_link_id) else {
+            return;
+        };
+        *ready_count = ready_count.saturating_sub(1);
+        if *ready_count == 0 {
+            self.ready_vehicle_counts.remove(selected_inbound_link_id);
         }
     }
 }
@@ -3820,7 +3841,7 @@ impl NodeSelectorState {
     ) {
         if self.selected_inbound_link_id.is_none()
             && offering_buffer_state
-                .pending_inbound_links
+                .registered_inbound_links
                 .iter()
                 .any(|pending_link_id| pending_link_id == link_id)
         {
@@ -3863,13 +3884,25 @@ impl NodeSelectorState {
             .as_ref()
             .is_some_and(|selected_link_id| {
                 offering_buffer_state
-                    .pending_inbound_links
-                    .iter()
-                    .any(|pending_link_id| pending_link_id == selected_link_id)
+                    .ready_vehicle_counts
+                    .get(selected_link_id)
+                    .copied()
+                    .unwrap_or(0)
+                    > 0
             });
         if !still_valid {
-            self.selected_inbound_link_id =
-                offering_buffer_state.pending_inbound_links.front().cloned();
+            self.selected_inbound_link_id = offering_buffer_state
+                .registered_inbound_links
+                .iter()
+                .find(|inbound_link_id| {
+                    offering_buffer_state
+                        .ready_vehicle_counts
+                        .get(*inbound_link_id)
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                })
+                .cloned();
         }
     }
 }
