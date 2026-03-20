@@ -413,6 +413,17 @@ pub struct NodeRunStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeStepBatchStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub sim_step: i64,
+    pub inbound_links: String,
+    pub release_pattern: String,
+    pub switches: usize,
+    pub group_size: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1543,6 +1554,34 @@ pub fn write_node_runstats(
     Ok(())
 }
 
+pub fn write_node_step_batchstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;sim_step;inbound_links;release_pattern;switches;group_size"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_step_batches(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{};{};{}",
+            stat.iteration,
+            stat.node_id,
+            stat.sim_step,
+            stat.inbound_links,
+            stat.release_pattern,
+            stat.switches,
+            stat.group_size
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -2183,6 +2222,66 @@ pub fn analyze_node_runs(output: &RunOutput, network: &Network) -> Vec<NodeRunSt
             .cmp(&right.iteration)
             .then_with(|| left.node_id.cmp(&right.node_id))
             .then_with(|| left.inbound_link_id.cmp(&right.inbound_link_id))
+    });
+    stats
+}
+
+pub fn analyze_node_step_batches(
+    output: &RunOutput,
+    network: &Network,
+) -> Vec<NodeStepBatchStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<(String, i64), Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            let sim_step = traversal.free_speed_exit_time_seconds.floor() as i64;
+            groups
+                .entry((link.to_node_id.clone(), sim_step))
+                .or_default()
+                .push(traversal);
+        }
+        for ((node_id, sim_step), mut traversals) in groups {
+            let unique_links = traversals
+                .iter()
+                .map(|traversal| traversal.link_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique_links.len() < 2 {
+                continue;
+            }
+            traversals.sort_by(|left, right| {
+                left.queue_exit_time_seconds
+                    .total_cmp(&right.queue_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let release_links = traversals
+                .iter()
+                .map(|traversal| traversal.link_id.clone())
+                .collect::<Vec<_>>();
+            let switches = release_links
+                .windows(2)
+                .filter(|window| window[0] != window[1])
+                .count();
+            stats.push(NodeStepBatchStat {
+                iteration: iteration.iteration,
+                node_id,
+                sim_step,
+                inbound_links: unique_links.into_iter().collect::<Vec<_>>().join("|"),
+                release_pattern: release_links.join("|"),
+                switches,
+                group_size: traversals.len(),
+            });
+        }
+    }
+    stats.sort_by(|left, right| {
+        left.iteration
+            .cmp(&right.iteration)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+            .then_with(|| left.sim_step.cmp(&right.sim_step))
     });
     stats
 }
