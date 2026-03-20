@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
@@ -66,7 +67,33 @@ enum Command {
         config: PathBuf,
         #[arg(long)]
         iteration: Option<u32>,
+        #[arg(long, default_value = "id")]
+        sort_by: PopulationSortKey,
+        #[arg(long)]
+        limit: Option<usize>,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PopulationSortKey {
+    Id,
+    Score,
+    RerouteGain,
+    Plans,
+}
+
+impl FromStr for PopulationSortKey {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "id" => Ok(Self::Id),
+            "score" => Ok(Self::Score),
+            "reroute-gain" => Ok(Self::RerouteGain),
+            "plans" => Ok(Self::Plans),
+            _ => Err(format!("unsupported sort key `{value}`")),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -117,7 +144,12 @@ fn run() -> Result<(), CliError> {
             person_id,
             iteration,
         } => inspect_person_command(&config, &person_id, iteration),
-        Command::InspectPopulation { config, iteration } => inspect_population_command(&config, iteration),
+        Command::InspectPopulation {
+            config,
+            iteration,
+            sort_by,
+            limit,
+        } => inspect_population_command(&config, iteration, sort_by, limit),
     }
 }
 
@@ -324,14 +356,14 @@ fn inspect_person_command(config_path: &Path, person_id: &str, iteration: Option
     Ok(())
 }
 
-fn inspect_population_command(config_path: &Path, iteration: Option<u32>) -> Result<(), CliError> {
+fn inspect_population_command(
+    config_path: &Path,
+    iteration: Option<u32>,
+    sort_by: PopulationSortKey,
+    limit: Option<usize>,
+) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
-
-    if let Some(iteration) = iteration {
-        println!("iteration={iteration}");
-    }
-    println!("persons={}", scenario.population.persons.len());
-    println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+    let mut rows = Vec::new();
 
     for person in &scenario.population.persons {
         let plans =
@@ -352,15 +384,45 @@ fn inspect_population_command(config_path: &Path, iteration: Option<u32>) -> Res
             .collect::<Vec<_>>()
             .join(",");
 
-        println!(
-            "{};{};{};{:.6};{:.6};{}",
-            person.id,
+        rows.push((
+            person.id.clone(),
             plans.selected_plan_index,
             plans.plans.len(),
             score.total_score,
             reroute_gain,
-            current_links
-        );
+            current_links,
+        ));
+    }
+
+    match sort_by {
+        PopulationSortKey::Id => rows.sort_by(|left, right| left.0.cmp(&right.0)),
+        PopulationSortKey::Score => rows.sort_by(|left, right| right.3.total_cmp(&left.3).then_with(|| left.0.cmp(&right.0))),
+        PopulationSortKey::RerouteGain => {
+            rows.sort_by(|left, right| right.4.total_cmp(&left.4).then_with(|| left.0.cmp(&right.0)))
+        }
+        PopulationSortKey::Plans => rows.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0))),
+    }
+
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
+    println!("persons={}", scenario.population.persons.len());
+    println!("sort_by={}", match sort_by {
+        PopulationSortKey::Id => "id",
+        PopulationSortKey::Score => "score",
+        PopulationSortKey::RerouteGain => "reroute-gain",
+        PopulationSortKey::Plans => "plans",
+    });
+    if let Some(limit) = limit {
+        println!("limit={limit}");
+    }
+    println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+    for row in rows {
+        println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
     }
 
     Ok(())
