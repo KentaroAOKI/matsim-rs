@@ -436,6 +436,18 @@ pub struct NodeSelectorPreviewStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeSelectorWindowStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub sim_step_from: i64,
+    pub sim_step_to: i64,
+    pub inbound_links: String,
+    pub selected_inbound_link_id: String,
+    pub selected_traversals_in_window: usize,
+    pub selected_steps_in_window: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1623,6 +1635,35 @@ pub fn write_node_selector_previewstats(
     Ok(())
 }
 
+pub fn write_node_selector_windowstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;sim_step_from;sim_step_to;inbound_links;selected_inbound_link_id;selected_traversals_in_window;selected_steps_in_window"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_selector_windows(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{};{};{};{}",
+            stat.iteration,
+            stat.node_id,
+            stat.sim_step_from,
+            stat.sim_step_to,
+            stat.inbound_links,
+            stat.selected_inbound_link_id,
+            stat.selected_traversals_in_window,
+            stat.selected_steps_in_window
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -2418,6 +2459,45 @@ pub fn analyze_node_selector_preview(
             .then_with(|| left.node_id.cmp(&right.node_id))
             .then_with(|| left.sim_step.cmp(&right.sim_step))
     });
+    stats
+}
+
+pub fn analyze_node_selector_windows(
+    output: &RunOutput,
+    network: &Network,
+) -> Vec<NodeSelectorWindowStat> {
+    let previews = analyze_node_selector_preview(output, network);
+    let mut stats = Vec::new();
+    let mut current: Option<NodeSelectorWindowStat> = None;
+    for preview in previews {
+        if let Some(window) = &mut current {
+            if window.iteration == preview.iteration
+                && window.node_id == preview.node_id
+                && window.inbound_links == preview.inbound_links
+                && window.selected_inbound_link_id == preview.selected_inbound_link_id
+                && window.sim_step_to + 1 == preview.sim_step
+            {
+                window.sim_step_to = preview.sim_step;
+                window.selected_traversals_in_window += preview.selected_traversals;
+                window.selected_steps_in_window += 1;
+                continue;
+            }
+            stats.push(current.take().unwrap());
+        }
+        current = Some(NodeSelectorWindowStat {
+            iteration: preview.iteration,
+            node_id: preview.node_id,
+            sim_step_from: preview.sim_step,
+            sim_step_to: preview.sim_step,
+            inbound_links: preview.inbound_links,
+            selected_inbound_link_id: preview.selected_inbound_link_id,
+            selected_traversals_in_window: preview.selected_traversals,
+            selected_steps_in_window: 1,
+        });
+    }
+    if let Some(window) = current {
+        stats.push(window);
+    }
     stats
 }
 
