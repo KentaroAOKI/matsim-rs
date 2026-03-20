@@ -61,6 +61,12 @@ enum Command {
         #[arg(long)]
         iteration: Option<u32>,
     },
+    InspectPopulation {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        iteration: Option<u32>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -111,6 +117,7 @@ fn run() -> Result<(), CliError> {
             person_id,
             iteration,
         } => inspect_person_command(&config, &person_id, iteration),
+        Command::InspectPopulation { config, iteration } => inspect_population_command(&config, iteration),
     }
 }
 
@@ -311,6 +318,48 @@ fn inspect_person_command(config_path: &Path, person_id: &str, iteration: Option
         println!(
             "{} start={} end={} score={:.6}",
             item.label, item.start_time_seconds, item.end_time_seconds, item.score
+        );
+    }
+
+    Ok(())
+}
+
+fn inspect_population_command(config_path: &Path, iteration: Option<u32>) -> Result<(), CliError> {
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
+
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
+    println!("persons={}", scenario.population.persons.len());
+    println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+
+    for person in &scenario.population.persons {
+        let plans =
+            explain_person_plans(&scenario, &person.id).ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
+        let reroute = explain_person_reroute(&scenario, &person.id)
+            .ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
+        let score =
+            explain_person_score(&scenario, &person.id).ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
+        let reroute_gain = reroute
+            .legs
+            .iter()
+            .map(|leg| (leg.current_cost_seconds - leg.rerouted_cost_seconds).max(0.0))
+            .sum::<f64>();
+        let current_links = reroute
+            .legs
+            .iter()
+            .flat_map(|leg| leg.current_link_ids.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        println!(
+            "{};{};{};{:.6};{:.6};{}",
+            person.id,
+            plans.selected_plan_index,
+            plans.plans.len(),
+            score.total_score,
+            reroute_gain,
+            current_links
         );
     }
 
