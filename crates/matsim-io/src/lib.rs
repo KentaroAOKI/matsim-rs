@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use matsim_core::{
-    Activity, ActivityScoringParameters, EventRecord, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement,
-    Population, Scenario, ScoringConfig, ModeScoringParameters, ReplanningConfig, StrategySetting,
+    Activity, ActivityScoringParameters, EventRecord, Leg, Link, MatsimConfig,
+    ModeScoringParameters, Network, Person, Plan, PlanElement, Population, ReplanningConfig,
+    Scenario, ScoringConfig, StrategySetting,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -84,10 +85,12 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
     let mut current_strategy_disable_after_fraction: Option<f64> = None;
 
     loop {
-        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
-            path: path.display().to_string(),
-            source,
-        })? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|source| IoError::ReadXml {
+                path: path.display().to_string(),
+                source,
+            })? {
             Event::Start(ref e) if e.name().as_ref() == b"module" => {
                 current_module = attr_string(path, e, b"name")?;
             }
@@ -111,11 +114,15 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
             Event::End(ref e) if e.name().as_ref() == b"parameterset" => {
                 if current_paramset_type.as_deref() == Some("activityParams") {
                     if let Some(activity_type) = current_activity_type.take() {
-                        scoring.activity_params.insert(activity_type, current_activity_params.clone());
+                        scoring
+                            .activity_params
+                            .insert(activity_type, current_activity_params.clone());
                     }
                 } else if current_paramset_type.as_deref() == Some("modeParams") {
                     if let Some(mode) = current_mode.take() {
-                        scoring.mode_params.insert(mode, current_mode_params.clone());
+                        scoring
+                            .mode_params
+                            .insert(mode, current_mode_params.clone());
                     }
                 } else if current_paramset_type.as_deref() == Some("strategysettings") {
                     if let Some(name) = current_strategy_name.take() {
@@ -135,9 +142,13 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                     Some("global") if name == "randomSeed" => {
                         random_seed = value.parse::<u64>().ok();
                     }
-                    Some("network") if name == "inputNetworkFile" => network_path = Some(value.clone()),
+                    Some("network") if name == "inputNetworkFile" => {
+                        network_path = Some(value.clone())
+                    }
                     Some("plans") if name == "inputPlansFile" => plans_path = Some(value.clone()),
-                    Some("controller") if name == "outputDirectory" => output_directory = Some(value.clone()),
+                    Some("controller") if name == "outputDirectory" => {
+                        output_directory = Some(value.clone())
+                    }
                     Some("controller") if name == "lastIteration" => {
                         last_iteration = value.parse::<u32>().unwrap_or(0);
                     }
@@ -168,19 +179,24 @@ pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
                             current_activity_params.typical_duration_seconds = parse_time(&value)?;
                         }
                         "openingTime" => {
-                            current_activity_params.opening_time_seconds = Some(parse_time(&value)?);
+                            current_activity_params.opening_time_seconds =
+                                Some(parse_time(&value)?);
                         }
                         "closingTime" => {
-                            current_activity_params.closing_time_seconds = Some(parse_time(&value)?);
+                            current_activity_params.closing_time_seconds =
+                                Some(parse_time(&value)?);
                         }
                         "latestStartTime" => {
-                            current_activity_params.latest_start_time_seconds = Some(parse_time(&value)?);
+                            current_activity_params.latest_start_time_seconds =
+                                Some(parse_time(&value)?);
                         }
                         "earliestEndTime" => {
-                            current_activity_params.earliest_end_time_seconds = Some(parse_time(&value)?);
+                            current_activity_params.earliest_end_time_seconds =
+                                Some(parse_time(&value)?);
                         }
                         "minimalDuration" => {
-                            current_activity_params.minimal_duration_seconds = Some(parse_time(&value)?);
+                            current_activity_params.minimal_duration_seconds =
+                                Some(parse_time(&value)?);
                         }
                         _ => {}
                     }
@@ -250,10 +266,12 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
     let mut network = Network::default();
 
     loop {
-        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
-            path: path.display().to_string(),
-            source,
-        })? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|source| IoError::ReadXml {
+                path: path.display().to_string(),
+                source,
+            })? {
             Event::Empty(ref e) if e.name().as_ref() == b"link" => {
                 let id = attr_string(path, e, b"id")?.unwrap_or_default();
                 let from_node_id = attr_string(path, e, b"from")?.unwrap_or_default();
@@ -310,10 +328,12 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
     let mut route_buffer = String::new();
 
     loop {
-        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
-            path: path.display().to_string(),
-            source,
-        })? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|source| IoError::ReadXml {
+                path: path.display().to_string(),
+                source,
+            })? {
             Event::Start(ref e) if e.name().as_ref() == b"person" => {
                 current_person_id = attr_string(path, e, b"id")?;
                 current_person_plans.clear();
@@ -355,13 +375,15 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
             }
             Event::Empty(ref e) if e.name().as_ref() == b"act" => {
                 if let Some(plan) = current_plan.as_mut() {
-                    plan.elements.push(PlanElement::Activity(parse_activity(path, e)?));
+                    plan.elements
+                        .push(PlanElement::Activity(parse_activity(path, e)?));
                 }
             }
             Event::Start(ref e) if e.name().as_ref() == b"leg" => {
                 if let Some(plan) = current_plan.as_mut() {
                     plan.elements.push(PlanElement::Leg(Leg {
-                        mode: attr_string(path, e, b"mode")?.unwrap_or_else(|| "unknown".to_string()),
+                        mode: attr_string(path, e, b"mode")?
+                            .unwrap_or_else(|| "unknown".to_string()),
                         route_node_ids: Vec::new(),
                     }));
                 }
@@ -404,64 +426,76 @@ pub fn write_population(path: &Path, population: &Population) -> Result<(), IoEr
         path: path.display().to_string(),
         source,
     })?;
-    writeln!(writer, "<!DOCTYPE plans SYSTEM \"http://www.matsim.org/files/dtd/plans_v4.dtd\">").map_err(
-        |source| IoError::WriteFile {
-            path: path.display().to_string(),
-            source,
-        },
-    )?;
+    writeln!(
+        writer,
+        "<!DOCTYPE plans SYSTEM \"http://www.matsim.org/files/dtd/plans_v4.dtd\">"
+    )
+    .map_err(|source| IoError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
     writeln!(writer, "<plans>").map_err(|source| IoError::WriteFile {
         path: path.display().to_string(),
         source,
     })?;
 
     for person in &population.persons {
-        writeln!(writer, "  <person id=\"{}\">", escape_xml(&person.id)).map_err(|source| IoError::WriteFile {
-            path: path.display().to_string(),
-            source,
+        writeln!(writer, "  <person id=\"{}\">", escape_xml(&person.id)).map_err(|source| {
+            IoError::WriteFile {
+                path: path.display().to_string(),
+                source,
+            }
         })?;
         for (index, plan) in person.plans.iter().enumerate() {
-            let selected = if index == person.selected_plan_index { " selected=\"yes\"" } else { "" };
+            let selected = if index == person.selected_plan_index {
+                " selected=\"yes\""
+            } else {
+                ""
+            };
             let score = plan
                 .score
                 .map(|value| format!(" score=\"{value}\""))
                 .unwrap_or_default();
-            writeln!(writer, "    <plan{score}{selected}>").map_err(|source| IoError::WriteFile {
-                path: path.display().to_string(),
-                source,
+            writeln!(writer, "    <plan{score}{selected}>").map_err(|source| {
+                IoError::WriteFile {
+                    path: path.display().to_string(),
+                    source,
+                }
             })?;
             for element in &plan.elements {
                 match element {
                     PlanElement::Activity(activity) => {
-                        write!(writer, "      <act type=\"{}\"", escape_xml(&activity.activity_type)).map_err(
-                            |source| IoError::WriteFile {
-                                path: path.display().to_string(),
-                                source,
-                            },
-                        )?;
+                        write!(
+                            writer,
+                            "      <act type=\"{}\"",
+                            escape_xml(&activity.activity_type)
+                        )
+                        .map_err(|source| IoError::WriteFile {
+                            path: path.display().to_string(),
+                            source,
+                        })?;
                         if let Some(link_id) = &activity.link_id {
-                            write!(writer, " link=\"{}\"", escape_xml(link_id)).map_err(|source| {
-                                IoError::WriteFile {
-                                    path: path.display().to_string(),
-                                    source,
-                                }
-                            })?;
-                        }
-                        if let Some(end_time_seconds) = activity.end_time_seconds {
-                            write!(writer, " end_time=\"{}\"", format_time(end_time_seconds)).map_err(
+                            write!(writer, " link=\"{}\"", escape_xml(link_id)).map_err(
                                 |source| IoError::WriteFile {
                                     path: path.display().to_string(),
                                     source,
                                 },
                             )?;
                         }
-                        if let Some(duration_seconds) = activity.duration_seconds {
-                            write!(writer, " dur=\"{}\"", format_time(duration_seconds)).map_err(|source| {
-                                IoError::WriteFile {
+                        if let Some(end_time_seconds) = activity.end_time_seconds {
+                            write!(writer, " end_time=\"{}\"", format_time(end_time_seconds))
+                                .map_err(|source| IoError::WriteFile {
                                     path: path.display().to_string(),
                                     source,
-                                }
-                            })?;
+                                })?;
+                        }
+                        if let Some(duration_seconds) = activity.duration_seconds {
+                            write!(writer, " dur=\"{}\"", format_time(duration_seconds)).map_err(
+                                |source| IoError::WriteFile {
+                                    path: path.display().to_string(),
+                                    source,
+                                },
+                            )?;
                         }
                         writeln!(writer, " />").map_err(|source| IoError::WriteFile {
                             path: path.display().to_string(),
@@ -469,12 +503,11 @@ pub fn write_population(path: &Path, population: &Population) -> Result<(), IoEr
                         })?;
                     }
                     PlanElement::Leg(leg) => {
-                        writeln!(writer, "      <leg mode=\"{}\">", escape_xml(&leg.mode)).map_err(|source| {
-                            IoError::WriteFile {
+                        writeln!(writer, "      <leg mode=\"{}\">", escape_xml(&leg.mode))
+                            .map_err(|source| IoError::WriteFile {
                                 path: path.display().to_string(),
                                 source,
-                            }
-                        })?;
+                            })?;
                         writeln!(
                             writer,
                             "        <route>{}</route>",
@@ -535,10 +568,12 @@ pub fn load_events(path: &Path) -> Result<Vec<(u32, Vec<EventRecord>)>, IoError>
             path: path.display().to_string(),
             value: parts[1].to_string(),
         })?;
-        let leg_index = parts[5].parse::<usize>().map_err(|_| IoError::InvalidFloat {
-            path: path.display().to_string(),
-            value: parts[5].to_string(),
-        })?;
+        let leg_index = parts[5]
+            .parse::<usize>()
+            .map_err(|_| IoError::InvalidFloat {
+                path: path.display().to_string(),
+                value: parts[5].to_string(),
+            })?;
         grouped.entry(iteration).or_default().push(EventRecord {
             time_seconds,
             person_id: parts[2].to_string(),
@@ -612,9 +647,11 @@ fn xml_reader(path: &Path) -> Result<Reader<BufReader<Box<dyn Read>>>, IoError> 
 fn attr_string(path: &Path, event: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, IoError> {
     for attr in event.attributes().flatten() {
         if attr.key.as_ref() == key {
-            let value = std::str::from_utf8(attr.value.as_ref()).map_err(|source| IoError::InvalidUtf8 {
-                path: path.display().to_string(),
-                source,
+            let value = std::str::from_utf8(attr.value.as_ref()).map_err(|source| {
+                IoError::InvalidUtf8 {
+                    path: path.display().to_string(),
+                    source,
+                }
             })?;
             return Ok(Some(value.to_string()));
         }
@@ -627,13 +664,15 @@ fn decode_text(path: &Path, bytes: &[u8]) -> Result<String, IoError> {
         path: path.display().to_string(),
         source,
     })?;
-    Ok(match quick_xml::escape::unescape(text).map_err(|source| IoError::ReadXml {
-        path: path.display().to_string(),
-        source: quick_xml::Error::Escape(source),
-    })? {
-        Cow::Borrowed(value) => value.to_string(),
-        Cow::Owned(value) => value,
-    })
+    Ok(
+        match quick_xml::escape::unescape(text).map_err(|source| IoError::ReadXml {
+            path: path.display().to_string(),
+            source: quick_xml::Error::Escape(source),
+        })? {
+            Cow::Borrowed(value) => value.to_string(),
+            Cow::Owned(value) => value,
+        },
+    )
 }
 
 fn parse_scoring_value(path: &Path, value: &str) -> Result<f64, IoError> {
@@ -676,7 +715,8 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 mod tests {
     use super::*;
     use matsim_core::{
-        explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, run_iterations_with_state,
+        explain_person_plans, explain_person_reroute, explain_person_score, run_iterations,
+        run_iterations_with_state,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -696,11 +736,21 @@ mod tests {
         assert_eq!(config.scoring.performing_utils_per_hour, 6.0);
         assert_eq!(config.scoring.late_arrival_utils_per_hour, -18.0);
         assert_eq!(
-            config.scoring.activity_params.get("h").unwrap().typical_duration_seconds,
+            config
+                .scoring
+                .activity_params
+                .get("h")
+                .unwrap()
+                .typical_duration_seconds,
             43_200.0
         );
         assert_eq!(
-            config.scoring.activity_params.get("w").unwrap().closing_time_seconds,
+            config
+                .scoring
+                .activity_params
+                .get("w")
+                .unwrap()
+                .closing_time_seconds,
             Some(64_800.0)
         );
         assert_eq!(config.replanning.strategies.len(), 2);
@@ -780,10 +830,17 @@ mod tests {
         assert_eq!(output.iterations.len(), 2);
         assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 1);
         assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
-        assert!(output.iterations[1].score_stats.avg_executed > output.iterations[0].score_stats.avg_executed);
         assert!(
-            output.iterations[1].travel_distance_stats.avg_leg_distance_per_person_m
-                < output.iterations[0].travel_distance_stats.avg_leg_distance_per_person_m
+            output.iterations[1].score_stats.avg_executed
+                > output.iterations[0].score_stats.avg_executed
+        );
+        assert!(
+            output.iterations[1]
+                .travel_distance_stats
+                .avg_leg_distance_per_person_m
+                < output.iterations[0]
+                    .travel_distance_stats
+                    .avg_leg_distance_per_person_m
         );
     }
 
@@ -796,9 +853,17 @@ mod tests {
 
         let explanation = explain_person_reroute(&scenario, "1").unwrap();
         assert_eq!(explanation.legs.len(), 1);
-        assert_eq!(explanation.legs[0].current_link_ids, vec!["slow-1", "slow-2", "end"]);
-        assert_eq!(explanation.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
-        assert!(explanation.legs[0].rerouted_cost_seconds < explanation.legs[0].current_cost_seconds);
+        assert_eq!(
+            explanation.legs[0].current_link_ids,
+            vec!["slow-1", "slow-2", "end"]
+        );
+        assert_eq!(
+            explanation.legs[0].rerouted_link_ids,
+            vec!["fast-1", "fast-2", "end"]
+        );
+        assert!(
+            explanation.legs[0].rerouted_cost_seconds < explanation.legs[0].current_cost_seconds
+        );
     }
 
     #[test]
@@ -810,8 +875,14 @@ mod tests {
 
         let (_, final_state) = run_iterations_with_state(&scenario);
         let explanation = explain_person_reroute(&final_state, "1").unwrap();
-        assert_eq!(explanation.legs[0].current_link_ids, vec!["fast-1", "fast-2", "end"]);
-        assert_eq!(explanation.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert_eq!(
+            explanation.legs[0].current_link_ids,
+            vec!["fast-1", "fast-2", "end"]
+        );
+        assert_eq!(
+            explanation.legs[0].rerouted_link_ids,
+            vec!["fast-1", "fast-2", "end"]
+        );
         assert_eq!(
             explanation.legs[0].current_cost_seconds,
             explanation.legs[0].rerouted_cost_seconds
@@ -848,8 +919,14 @@ mod tests {
         assert!((output.iterations[1].score_stats.avg_average - 90.374_538).abs() < 1.0e-6);
 
         let reroute = explain_person_reroute(&scenario, "route").unwrap();
-        assert_eq!(reroute.legs[0].current_link_ids, vec!["slow-1", "slow-2", "end"]);
-        assert_eq!(reroute.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert_eq!(
+            reroute.legs[0].current_link_ids,
+            vec!["slow-1", "slow-2", "end"]
+        );
+        assert_eq!(
+            reroute.legs[0].rerouted_link_ids,
+            vec!["fast-1", "fast-2", "end"]
+        );
         assert!(reroute.legs[0].rerouted_cost_seconds < reroute.legs[0].current_cost_seconds);
     }
 
@@ -894,11 +971,26 @@ mod tests {
 
         let output = run_iterations(&scenario);
         assert_eq!(output.iterations.len(), 2);
-        assert_eq!(output.iterations[0].plan_memory_stats.avg_plans_per_person, 1.5);
-        assert_eq!(output.iterations[0].plan_memory_stats.max_plans_per_person, 2);
-        assert_eq!(output.iterations[1].plan_memory_stats.avg_plans_per_person, 1.0);
-        assert_eq!(output.iterations[1].plan_memory_stats.max_plans_per_person, 1);
-        assert_eq!(output.iterations[1].plan_memory_stats.selected_plan_share, 1.0);
+        assert_eq!(
+            output.iterations[0].plan_memory_stats.avg_plans_per_person,
+            1.5
+        );
+        assert_eq!(
+            output.iterations[0].plan_memory_stats.max_plans_per_person,
+            2
+        );
+        assert_eq!(
+            output.iterations[1].plan_memory_stats.avg_plans_per_person,
+            1.0
+        );
+        assert_eq!(
+            output.iterations[1].plan_memory_stats.max_plans_per_person,
+            1
+        );
+        assert_eq!(
+            output.iterations[1].plan_memory_stats.selected_plan_share,
+            1.0
+        );
     }
 
     #[test]

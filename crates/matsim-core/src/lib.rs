@@ -463,7 +463,11 @@ impl SimulationState {
     }
 }
 
-fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration: u32) -> IterationOutput {
+fn run_iteration(
+    scenario: &mut Scenario,
+    state: &mut SimulationState,
+    iteration: u32,
+) -> IterationOutput {
     let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
@@ -481,7 +485,12 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
                     total_legs += 1;
                     *mode_counts.entry(leg.mode.clone()).or_default() += 1;
 
-                    let distance_m = leg_distance_m(leg, last_activity, next_activity(&person.selected_plan(), leg), &scenario.network);
+                    let distance_m = leg_distance_m(
+                        leg,
+                        last_activity,
+                        next_activity(&person.selected_plan(), leg),
+                        &scenario.network,
+                    );
                     total_leg_distance_m += distance_m;
                     person_distance_m += distance_m;
                 }
@@ -509,7 +518,11 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         })
         .collect();
 
-    for (person_stats, executed_score) in state.person_stats.iter_mut().zip(executed_scores.iter().copied()) {
+    for (person_stats, executed_score) in state
+        .person_stats
+        .iter_mut()
+        .zip(executed_scores.iter().copied())
+    {
         person_stats.last_executed = executed_score;
         person_stats.best = person_stats.best.max(executed_score);
         person_stats.worst = person_stats.worst.min(executed_score);
@@ -518,12 +531,22 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
     }
 
     let avg_executed = if person_count > 0.0 {
-        state.person_stats.iter().map(|stats| stats.last_executed).sum::<f64>() / person_count
+        state
+            .person_stats
+            .iter()
+            .map(|stats| stats.last_executed)
+            .sum::<f64>()
+            / person_count
     } else {
         0.0
     };
     let avg_worst = if person_count > 0.0 {
-        state.person_stats.iter().map(|stats| stats.worst).sum::<f64>() / person_count
+        state
+            .person_stats
+            .iter()
+            .map(|stats| stats.worst)
+            .sum::<f64>()
+            / person_count
     } else {
         0.0
     };
@@ -538,7 +561,12 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         0.0
     };
     let avg_best = if person_count > 0.0 {
-        state.person_stats.iter().map(|stats| stats.best).sum::<f64>() / person_count
+        state
+            .person_stats
+            .iter()
+            .map(|stats| stats.best)
+            .sum::<f64>()
+            / person_count
     } else {
         0.0
     };
@@ -547,15 +575,35 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         .into_iter()
         .map(|(mode, count)| ModeStat {
             mode,
-            share: if leg_count > 0.0 { count as f64 / leg_count } else { 0.0 },
+            share: if leg_count > 0.0 {
+                count as f64 / leg_count
+            } else {
+                0.0
+            },
         })
         .collect();
 
     let travel_distance_stats = TravelDistanceStats {
-        avg_leg_distance_per_plan_m: if leg_count > 0.0 { total_leg_distance_m / leg_count } else { 0.0 },
-        avg_leg_distance_per_person_m: if person_count > 0.0 { total_plan_distance_m / person_count } else { 0.0 },
-        avg_trip_distance_per_plan_m: if leg_count > 0.0 { total_leg_distance_m / leg_count } else { 0.0 },
-        avg_trip_distance_per_person_m: if person_count > 0.0 { total_plan_distance_m / person_count } else { 0.0 },
+        avg_leg_distance_per_plan_m: if leg_count > 0.0 {
+            total_leg_distance_m / leg_count
+        } else {
+            0.0
+        },
+        avg_leg_distance_per_person_m: if person_count > 0.0 {
+            total_plan_distance_m / person_count
+        } else {
+            0.0
+        },
+        avg_trip_distance_per_plan_m: if leg_count > 0.0 {
+            total_leg_distance_m / leg_count
+        } else {
+            0.0
+        },
+        avg_trip_distance_per_person_m: if person_count > 0.0 {
+            total_plan_distance_m / person_count
+        } else {
+            0.0
+        },
     };
 
     let score_stats = ScoreStats {
@@ -603,15 +651,14 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
             0.0
         },
     };
-    let replanning_summary =
-        apply_replanning_hook(
-            scenario,
-            &executed_scores,
-            &simulation.leg_times,
-            &simulation.observed_link_costs,
-            &simulation.observed_link_time_profiles,
-            iteration,
-        );
+    let replanning_summary = apply_replanning_hook(
+        scenario,
+        &executed_scores,
+        &simulation.leg_times,
+        &simulation.observed_link_costs,
+        &simulation.observed_link_time_profiles,
+        iteration,
+    );
     let observed_link_costs = simulation
         .observed_link_costs
         .iter()
@@ -630,12 +677,14 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
                 .get(link_id)
                 .map(|link| link.length_m / link.freespeed_mps)
                 .unwrap_or(0.0);
-            profile.iter().map(move |(hour_bucket, travel_time_seconds)| LinkProfileStat {
-                link_id: link_id.clone(),
-                hour_bucket: *hour_bucket,
-                travel_time_seconds: *travel_time_seconds,
-                delay_seconds: (*travel_time_seconds - free_speed_time_seconds).max(0.0),
-            })
+            profile
+                .iter()
+                .map(move |(hour_bucket, travel_time_seconds)| LinkProfileStat {
+                    link_id: link_id.clone(),
+                    hour_bucket: *hour_bucket,
+                    travel_time_seconds: *travel_time_seconds,
+                    delay_seconds: (*travel_time_seconds - free_speed_time_seconds).max(0.0),
+                })
         })
         .collect();
 
@@ -763,7 +812,10 @@ fn apply_replanning_hook(
                 stat.applied += 1;
             }
         }
-        prune_plans(person, scenario.config.replanning.max_agent_plan_memory_size);
+        prune_plans(
+            person,
+            scenario.config.replanning.max_agent_plan_memory_size,
+        );
     }
     let final_plan_count = scenario
         .population
@@ -796,7 +848,12 @@ fn prune_plans(person: &mut Person, max_agent_plan_memory_size: Option<usize>) {
         .enumerate()
         .map(|(index, plan)| (index, plan.score.unwrap_or(f64::NEG_INFINITY)))
         .collect::<Vec<_>>();
-    plan_order.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    plan_order.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     let mut keep = plan_order
         .into_iter()
@@ -807,7 +864,12 @@ fn prune_plans(person: &mut Person, max_agent_plan_memory_size: Option<usize>) {
         if let Some((lowest_position, _)) = keep
             .iter()
             .enumerate()
-            .map(|(position, index)| (position, person.plans[*index].score.unwrap_or(f64::NEG_INFINITY)))
+            .map(|(position, index)| {
+                (
+                    position,
+                    person.plans[*index].score.unwrap_or(f64::NEG_INFINITY),
+                )
+            })
             .min_by(|left, right| left.1.total_cmp(&right.1))
         {
             keep[lowest_position] = selected_index;
@@ -837,9 +899,14 @@ fn select_strategy<'a>(
 ) -> Option<&'a str> {
     let active_strategies = strategies
         .iter()
-        .filter(|strategy| strategy.weight > 0.0 && strategy_is_active(strategy, iteration, last_iteration))
+        .filter(|strategy| {
+            strategy.weight > 0.0 && strategy_is_active(strategy, iteration, last_iteration)
+        })
         .collect::<Vec<_>>();
-    let total_weight = active_strategies.iter().map(|strategy| strategy.weight).sum::<f64>();
+    let total_weight = active_strategies
+        .iter()
+        .map(|strategy| strategy.weight)
+        .sum::<f64>();
     if total_weight <= 0.0 {
         return None;
     }
@@ -990,7 +1057,10 @@ fn reroute_selected_plan_with_stats(
         .unwrap_or_else(|| alternative_route_node_ids.clone());
         let mut candidate_routes = Vec::<Vec<String>>::new();
         candidate_routes.push(existing_leg.route_node_ids.clone());
-        if !candidate_routes.iter().any(|route| route == &primary_route_node_ids) {
+        if !candidate_routes
+            .iter()
+            .any(|route| route == &primary_route_node_ids)
+        {
             candidate_routes.push(primary_route_node_ids.clone());
         }
         if !candidate_routes
@@ -999,7 +1069,10 @@ fn reroute_selected_plan_with_stats(
         {
             candidate_routes.push(alternative_route_node_ids.clone());
         }
-        if !candidate_routes.iter().any(|route| route == &secondary_route_node_ids) {
+        if !candidate_routes
+            .iter()
+            .any(|route| route == &secondary_route_node_ids)
+        {
             candidate_routes.push(secondary_route_node_ids.clone());
         }
         let route_node_ids = candidate_routes
@@ -1016,7 +1089,8 @@ fn reroute_selected_plan_with_stats(
                     link_time_profiles,
                 );
                 let candidate_score =
-                    score_plan_internal(&candidate_plan, scoring, network, &candidate_leg_times).total_score;
+                    score_plan_internal(&candidate_plan, scoring, network, &candidate_leg_times)
+                        .total_score;
                 (route_node_ids, candidate_score)
             })
             .max_by(|left, right| {
@@ -1038,8 +1112,12 @@ fn reroute_selected_plan_with_stats(
     if rerouted {
         let current_breakdown =
             score_plan_internal(&original_plan, scoring, network, current_leg_travel_times);
-        let rerouted_leg_travel_times =
-            estimate_plan_leg_travel_times_from_link_costs(&rerouted_plan, network, link_costs, link_time_profiles);
+        let rerouted_leg_travel_times = estimate_plan_leg_travel_times_from_link_costs(
+            &rerouted_plan,
+            network,
+            link_costs,
+            link_time_profiles,
+        );
         let rerouted_breakdown =
             score_plan_internal(&rerouted_plan, scoring, network, &rerouted_leg_travel_times);
         let estimated_rerouted_score = rerouted_breakdown.total_score;
@@ -1057,19 +1135,24 @@ fn reroute_selected_plan_with_stats(
                 PlanElement::Leg(leg) => {
                     let previous_activity = previous_activity_at(&original_plan, index);
                     let next_activity = next_activity_at(&original_plan, index);
-                    let current_link_ids = route_link_sequence(leg, previous_activity, next_activity, network)
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect::<Vec<_>>();
+                    let current_link_ids =
+                        route_link_sequence(leg, previous_activity, next_activity, network)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>();
                     let rerouted_leg = match rerouted_plan.elements.get(index) {
                         Some(PlanElement::Leg(leg)) => leg,
                         _ => return None,
                     };
-                    let rerouted_link_ids =
-                        route_link_sequence(rerouted_leg, previous_activity, next_activity, network)
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect::<Vec<_>>();
+                    let rerouted_link_ids = route_link_sequence(
+                        rerouted_leg,
+                        previous_activity,
+                        next_activity,
+                        network,
+                    )
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
                     let departure_time_seconds =
                         leg_departure_time_seconds(&original_plan, index).unwrap_or(0.0);
                     let stat = RerouteLegStat {
@@ -1160,13 +1243,15 @@ fn reroute_selected_plan_with_stats(
             .iter()
             .zip(rerouted_breakdown.items.iter())
             .enumerate()
-            .map(|(component_index, (current, rerouted))| RerouteScoreComponentStat {
-                component: format!("{:02}:{}", component_index, current.label),
-                label: current.label.clone(),
-                current_score: current.score,
-                rerouted_score: rerouted.score,
-                delta: rerouted.score - current.score,
-            })
+            .map(
+                |(component_index, (current, rerouted))| RerouteScoreComponentStat {
+                    component: format!("{:02}:{}", component_index, current.label),
+                    label: current.label.clone(),
+                    current_score: current.score,
+                    rerouted_score: rerouted.score,
+                    delta: rerouted.score - current.score,
+                },
+            )
             .collect();
         return Some(RerouteStat {
             person_id: person.id.clone(),
@@ -1209,7 +1294,11 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
 }
 
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
-    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    let person = scenario
+        .population
+        .persons
+        .iter()
+        .find(|person| person.id == person_id)?;
     let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let person_index = scenario
         .population
@@ -1228,7 +1317,11 @@ pub fn explain_person_reroute_score(
     scenario: &Scenario,
     person_id: &str,
 ) -> Option<PersonRerouteScoreBreakdown> {
-    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    let person = scenario
+        .population
+        .persons
+        .iter()
+        .find(|person| person.id == person_id)?;
     let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let person_index = scenario
         .population
@@ -1315,7 +1408,9 @@ pub fn analyze_event_groups(grouped_events: &[(u32, Vec<EventRecord>)]) -> Vec<E
         .collect()
 }
 
-pub fn analyze_link_event_groups(grouped_events: &[(u32, Vec<EventRecord>)]) -> Vec<LinkEventAnalysis> {
+pub fn analyze_link_event_groups(
+    grouped_events: &[(u32, Vec<EventRecord>)],
+) -> Vec<LinkEventAnalysis> {
     grouped_events
         .iter()
         .flat_map(|(iteration, events)| analyze_link_event_records(*iteration, events))
@@ -1337,11 +1432,16 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
     for event in events {
         match event.event_type.as_str() {
             "departure" => {
-                departures.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
+                departures.insert(
+                    (event.person_id.as_str(), event.leg_index),
+                    event.time_seconds,
+                );
                 departure_count += 1;
             }
             "arrival" => {
-                if let Some(departure_time) = departures.remove(&(event.person_id.as_str(), event.leg_index)) {
+                if let Some(departure_time) =
+                    departures.remove(&(event.person_id.as_str(), event.leg_index))
+                {
                     leg_travel_times.push((event.time_seconds - departure_time).max(0.0));
                 }
                 arrival_count += 1;
@@ -1349,11 +1449,16 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
             "link_enter" => link_enter_count += 1,
             "link_leave" => link_leave_count += 1,
             event_type if event_type.starts_with("act_start:") => {
-                activity_starts.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
+                activity_starts.insert(
+                    (event.person_id.as_str(), event.leg_index),
+                    event.time_seconds,
+                );
                 activity_start_count += 1;
             }
             event_type if event_type.starts_with("act_end:") => {
-                if let Some(start_time) = activity_starts.remove(&(event.person_id.as_str(), event.leg_index)) {
+                if let Some(start_time) =
+                    activity_starts.remove(&(event.person_id.as_str(), event.leg_index))
+                {
                     activity_durations.push((event.time_seconds - start_time).max(0.0));
                 }
                 activity_end_count += 1;
@@ -1429,8 +1534,15 @@ fn analyze_link_event_records(iteration: u32, events: &[EventRecord]) -> Vec<Lin
         .collect()
 }
 
-pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<PersonRerouteExplanation> {
-    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+pub fn explain_person_reroute(
+    scenario: &Scenario,
+    person_id: &str,
+) -> Option<PersonRerouteExplanation> {
+    let person = scenario
+        .population
+        .persons
+        .iter()
+        .find(|person| person.id == person_id)?;
     let simulation = simulate_traffic(&scenario.population, &scenario.network);
     let plan = person.selected_plan();
     let mut legs = Vec::new();
@@ -1441,10 +1553,11 @@ pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<Pe
         };
         let previous_activity = previous_activity_at(plan, element_index);
         let next_activity = next_activity_at(plan, element_index);
-        let current_link_ids = route_link_sequence(leg, previous_activity, next_activity, &scenario.network)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        let current_link_ids =
+            route_link_sequence(leg, previous_activity, next_activity, &scenario.network)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
         let current_cost_seconds = current_link_ids
             .iter()
             .map(|link_id| {
@@ -1475,10 +1588,15 @@ pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<Pe
             mode: leg.mode.clone(),
             route_node_ids: rerouted_node_ids.clone(),
         };
-        let rerouted_link_ids = route_link_sequence(&rerouted_leg, previous_activity, next_activity, &scenario.network)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        let rerouted_link_ids = route_link_sequence(
+            &rerouted_leg,
+            previous_activity,
+            next_activity,
+            &scenario.network,
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
         let rerouted_cost_seconds = rerouted_link_ids
             .iter()
             .map(|link_id| {
@@ -1513,8 +1631,15 @@ pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<Pe
     })
 }
 
-pub fn explain_person_plans(scenario: &Scenario, person_id: &str) -> Option<PersonPlansExplanation> {
-    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+pub fn explain_person_plans(
+    scenario: &Scenario,
+    person_id: &str,
+) -> Option<PersonPlansExplanation> {
+    let person = scenario
+        .population
+        .persons
+        .iter()
+        .find(|person| person.id == person_id)?;
     let plans = person
         .plans
         .iter()
@@ -1574,7 +1699,12 @@ fn write_person_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreEr
             writeln!(
                 writer,
                 "{};{};{:.6};{:.6};{:.6};{:.6}",
-                iteration.iteration, stat.person_id, stat.executed, stat.worst, stat.average, stat.best
+                iteration.iteration,
+                stat.person_id,
+                stat.executed,
+                stat.worst,
+                stat.average,
+                stat.best
             )
             .map_err(|source| write_error(path, source))?;
         }
@@ -1647,7 +1777,8 @@ fn write_traveldistancestats(path: &Path, output: &RunOutput) -> Result<(), Core
 
 fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;link_id;travel_time_seconds").map_err(|source| write_error(path, source))?;
+    writeln!(writer, "iteration;link_id;travel_time_seconds")
+        .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for stat in &iteration.observed_link_costs {
             writeln!(
@@ -1663,14 +1794,21 @@ fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), Core
 
 fn write_observed_link_profiles(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;link_id;hour_bucket;travel_time_seconds;delay_seconds")
-        .map_err(|source| write_error(path, source))?;
+    writeln!(
+        writer,
+        "iteration;link_id;hour_bucket;travel_time_seconds;delay_seconds"
+    )
+    .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for stat in &iteration.observed_link_profiles {
             writeln!(
                 writer,
                 "{};{};{};{:.6};{:.6}",
-                iteration.iteration, stat.link_id, stat.hour_bucket, stat.travel_time_seconds, stat.delay_seconds
+                iteration.iteration,
+                stat.link_id,
+                stat.hour_bucket,
+                stat.travel_time_seconds,
+                stat.delay_seconds
             )
             .map_err(|source| write_error(path, source))?;
         }
@@ -1699,7 +1837,8 @@ fn write_link_traversals(path: &Path, output: &RunOutput) -> Result<(), CoreErro
                 traversal.same_enter_group_size,
                 traversal.free_speed_exit_time_seconds,
                 traversal.queue_exit_time_seconds,
-                (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds).max(0.0),
+                (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                    .max(0.0),
                 traversal.headway_seconds
             )
             .map_err(|source| write_error(path, source))?;
@@ -1718,9 +1857,12 @@ fn write_queue_delaystats(path: &Path, output: &RunOutput) -> Result<(), CoreErr
     for iteration in &output.iterations {
         let mut aggregates = BTreeMap::<String, (f64, f64, usize)>::new();
         for traversal in &iteration.link_traversals {
-            let delay_s =
-                (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds).max(0.0);
-            let entry = aggregates.entry(traversal.link_id.clone()).or_insert((0.0, 0.0, 0));
+            let delay_s = (traversal.queue_exit_time_seconds
+                - traversal.free_speed_exit_time_seconds)
+                .max(0.0);
+            let entry = aggregates
+                .entry(traversal.link_id.clone())
+                .or_insert((0.0, 0.0, 0));
             entry.0 += delay_s;
             entry.1 = entry.1.max(delay_s);
             entry.2 += 1;
@@ -1748,8 +1890,11 @@ fn write_queue_delaystats(path: &Path, output: &RunOutput) -> Result<(), CoreErr
 
 fn write_events(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;time_seconds;person_id;event_type;link_id;leg_index")
-        .map_err(|source| write_error(path, source))?;
+    writeln!(
+        writer,
+        "iteration;time_seconds;person_id;event_type;link_id;leg_index"
+    )
+    .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for event in &iteration.events {
             writeln!(
@@ -1796,8 +1941,11 @@ fn write_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
 
 fn write_link_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;link_id;avg_travel_time_seconds;traversals")
-        .map_err(|source| write_error(path, source))?;
+    writeln!(
+        writer,
+        "iteration;link_id;avg_travel_time_seconds;traversals"
+    )
+    .map_err(|source| write_error(path, source))?;
     let grouped = output
         .iterations
         .iter()
@@ -1807,7 +1955,10 @@ fn write_link_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreErro
         writeln!(
             writer,
             "{};{};{:.6};{}",
-            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
+            analysis.iteration,
+            analysis.link_id,
+            analysis.avg_travel_time_seconds,
+            analysis.traversals
         )
         .map_err(|source| write_error(path, source))?;
     }
@@ -1924,7 +2075,11 @@ fn write_reroute_componentstats(path: &Path, output: &RunOutput) -> Result<(), C
                 component,
                 label,
                 total_score_delta,
-                if count > 0 { total_score_delta / count as f64 } else { 0.0 },
+                if count > 0 {
+                    total_score_delta / count as f64
+                } else {
+                    0.0
+                },
                 count,
                 zero_delta_count
             )
@@ -1991,7 +2146,12 @@ fn next_activity<'a>(plan: &'a Plan, leg: &Leg) -> Option<&'a Activity> {
     None
 }
 
-fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity: Option<&Activity>, network: &Network) -> f64 {
+fn leg_distance_m(
+    leg: &Leg,
+    previous_activity: Option<&Activity>,
+    next_activity: Option<&Activity>,
+    network: &Network,
+) -> f64 {
     let previous_link = previous_activity.and_then(|activity| activity.link_id.as_deref());
     let next_link = next_activity.and_then(|activity| activity.link_id.as_deref());
     if leg.route_node_ids.is_empty() && previous_link.is_some() && previous_link == next_link {
@@ -2044,13 +2204,20 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
 
     while let Some(pending_leg) = pending.pop() {
         let person = &population.persons[pending_leg.person_index];
-        let Some(PlanElement::Leg(leg)) = person.selected_plan().elements.get(pending_leg.plan_element_index) else {
+        let Some(PlanElement::Leg(leg)) = person
+            .selected_plan()
+            .elements
+            .get(pending_leg.plan_element_index)
+        else {
             continue;
         };
-        let previous_activity = previous_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
-        let next_activity = next_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
+        let previous_activity =
+            previous_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
+        let next_activity =
+            next_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
         let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
-        let leg_order = leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
+        let leg_order =
+            leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
 
         if let Some(activity) = previous_activity {
             events.push(EventRecord {
@@ -2084,11 +2251,12 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             let free_speed_exit_s = current_time_s + link.length_m / link.freespeed_mps;
             let queue_exit_s = next_link_exit_time_s.get(link_id).copied().unwrap_or(0.0);
             let exit_time_s = free_speed_exit_s.max(queue_exit_s);
-            let headway_s = if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
-                3600.0 / link.capacity_veh_per_hour
-            } else {
-                0.0
-            };
+            let headway_s =
+                if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
+                    3600.0 / link.capacity_veh_per_hour
+                } else {
+                    0.0
+                };
             let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
             let same_enter_key = (link_id.to_string(), to_millis(current_time_s));
             let same_enter_rank = same_enter_counts.get(&same_enter_key).copied().unwrap_or(0);
@@ -2177,7 +2345,10 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         })
         .collect();
     for traversal in &mut link_traversals {
-        let key = (traversal.link_id.clone(), to_millis(traversal.enter_time_seconds));
+        let key = (
+            traversal.link_id.clone(),
+            to_millis(traversal.enter_time_seconds),
+        );
         traversal.same_enter_group_size = same_enter_counts.get(&key).copied().unwrap_or(1);
     }
     let observed_link_time_profiles = observed_link_profile_sums
@@ -2211,7 +2382,9 @@ fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
     let mut current_time_s = 0.0;
     for (index, element) in plan.elements.iter().enumerate() {
         match element {
-            PlanElement::Activity(activity) => current_time_s = activity_departure_time(activity, current_time_s),
+            PlanElement::Activity(activity) => {
+                current_time_s = activity_departure_time(activity, current_time_s)
+            }
             PlanElement::Leg(_) => return Some((index, current_time_s)),
         }
     }
@@ -2222,7 +2395,9 @@ fn leg_departure_time_seconds(plan: &Plan, leg_index: usize) -> Option<f64> {
     let mut current_time_s = 0.0;
     for (index, element) in plan.elements.iter().enumerate() {
         match element {
-            PlanElement::Activity(activity) => current_time_s = activity_departure_time(activity, current_time_s),
+            PlanElement::Activity(activity) => {
+                current_time_s = activity_departure_time(activity, current_time_s)
+            }
             PlanElement::Leg(_) if index == leg_index => return Some(current_time_s),
             PlanElement::Leg(_) => {}
         }
@@ -2254,17 +2429,23 @@ fn activity_departure_time(activity: &Activity, arrival_time_s: f64) -> f64 {
 }
 
 fn previous_activity_at(plan: &Plan, leg_index: usize) -> Option<&Activity> {
-    plan.elements[..leg_index].iter().rev().find_map(|element| match element {
-        PlanElement::Activity(activity) => Some(activity),
-        _ => None,
-    })
+    plan.elements[..leg_index]
+        .iter()
+        .rev()
+        .find_map(|element| match element {
+            PlanElement::Activity(activity) => Some(activity),
+            _ => None,
+        })
 }
 
 fn next_activity_at(plan: &Plan, leg_index: usize) -> Option<&Activity> {
-    plan.elements.iter().skip(leg_index + 1).find_map(|element| match element {
-        PlanElement::Activity(activity) => Some(activity),
-        _ => None,
-    })
+    plan.elements
+        .iter()
+        .skip(leg_index + 1)
+        .find_map(|element| match element {
+            PlanElement::Activity(activity) => Some(activity),
+            _ => None,
+        })
 }
 
 fn leg_order_for_element(plan: &Plan, leg_index: usize) -> usize {
@@ -2278,7 +2459,12 @@ fn to_millis(time_s: f64) -> i64 {
     (time_s * 1000.0).round() as i64
 }
 
-fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network, leg_travel_times: &[f64]) -> f64 {
+fn score_plan(
+    plan: &Plan,
+    scoring: &ScoringConfig,
+    network: &Network,
+    leg_travel_times: &[f64],
+) -> f64 {
     score_plan_internal(plan, scoring, network, leg_travel_times).total_score
 }
 
@@ -2288,7 +2474,8 @@ fn score_plan_breakdown(
     network: &Network,
     leg_travel_times: &[f64],
 ) -> PersonScoreBreakdown {
-    let breakdown = score_plan_internal(&person.selected_plan(), scoring, network, leg_travel_times);
+    let breakdown =
+        score_plan_internal(&person.selected_plan(), scoring, network, leg_travel_times);
     PersonScoreBreakdown {
         person_id: person.id.clone(),
         total_score: breakdown.total_score,
@@ -2402,18 +2589,25 @@ fn score_plan_internal(
 
     if let Some(last) = activities.last() {
         if let Some((last_index, last_start, last_end)) = activity_windows.last_mut() {
-            if *last_end == *last_start && last.duration_seconds.is_none() && last.end_time_seconds.is_none() {
+            if *last_end == *last_start
+                && last.duration_seconds.is_none()
+                && last.end_time_seconds.is_none()
+            {
                 *last_end = 24.0 * 3600.0;
             }
             *last_index = activities.len() - 1;
         }
     }
 
-    if activities.len() >= 2 && activities.first().map(|a| a.activity_type.as_str()) == activities.last().map(|a| a.activity_type.as_str()) {
+    if activities.len() >= 2
+        && activities.first().map(|a| a.activity_type.as_str())
+            == activities.last().map(|a| a.activity_type.as_str())
+    {
         let last = activities.last().unwrap();
         let (_, _, first_end) = activity_windows[0];
         let (_, last_start, _) = activity_windows[activity_windows.len() - 1];
-        let overnight_score = score_activity(last, scoring, last_start, Some(first_end + 24.0 * 3600.0));
+        let overnight_score =
+            score_activity(last, scoring, last_start, Some(first_end + 24.0 * 3600.0));
         score += overnight_score;
         items.push(ScoreBreakdownItem {
             label: format!("activity:{}(overnight)", last.activity_type),
@@ -2421,7 +2615,12 @@ fn score_plan_internal(
             end_time_seconds: first_end + 24.0 * 3600.0,
             score: overnight_score,
         });
-        for (index, start, end) in activity_windows.iter().copied().skip(1).take(activity_windows.len().saturating_sub(2)) {
+        for (index, start, end) in activity_windows
+            .iter()
+            .copied()
+            .skip(1)
+            .take(activity_windows.len().saturating_sub(2))
+        {
             let activity_score = score_activity(activities[index], scoring, start, Some(end));
             score += activity_score;
             items.push(ScoreBreakdownItem {
@@ -2459,8 +2658,7 @@ fn estimate_plan_leg_travel_times_from_link_costs(
     link_costs: &BTreeMap<String, f64>,
     link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
 ) -> Vec<f64> {
-    plan
-        .elements
+    plan.elements
         .iter()
         .enumerate()
         .filter_map(|(index, element)| match element {
@@ -2468,14 +2666,20 @@ fn estimate_plan_leg_travel_times_from_link_costs(
                 let previous_activity = previous_activity_at(plan, index);
                 let next_activity = next_activity_at(plan, index);
                 let mut current_time_s = leg_departure_time_seconds(plan, index).unwrap_or(0.0);
-                let travel_time = route_link_sequence(leg, previous_activity, next_activity, network)
-                    .into_iter()
-                    .map(|link_id| {
-                        let cost = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
-                        current_time_s += cost;
-                        cost
-                    })
-                    .sum::<f64>();
+                let travel_time =
+                    route_link_sequence(leg, previous_activity, next_activity, network)
+                        .into_iter()
+                        .map(|link_id| {
+                            let cost = link_cost_for_departure(
+                                link_id,
+                                current_time_s,
+                                link_costs,
+                                link_time_profiles,
+                            );
+                            current_time_s += cost;
+                            cost
+                        })
+                        .sum::<f64>();
                 Some(travel_time)
             }
             _ => None,
@@ -2492,7 +2696,8 @@ fn route_cost_from_links(
     let mut current_time_s = departure_time_s;
     let mut total_cost_s = 0.0;
     for link_id in link_ids {
-        let cost_s = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
+        let cost_s =
+            link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
         total_cost_s += cost_s;
         current_time_s += cost_s;
     }
@@ -2509,8 +2714,12 @@ fn penalize_route_links(
     let mut penalized_link_costs = link_costs.clone();
     let mut current_route_time_s = departure_time_s;
     for link_id in route_links {
-        let observed_cost_s =
-            link_cost_for_departure(link_id, current_route_time_s, link_costs, link_time_profiles);
+        let observed_cost_s = link_cost_for_departure(
+            link_id,
+            current_route_time_s,
+            link_costs,
+            link_time_profiles,
+        );
         let free_speed_cost_s = network
             .links
             .get(*link_id)
@@ -2562,7 +2771,9 @@ fn score_activity(
             activity_end = closing;
         }
     }
-    if let (Some(opening), Some(closing)) = (params.opening_time_seconds, params.closing_time_seconds) {
+    if let (Some(opening), Some(closing)) =
+        (params.opening_time_seconds, params.closing_time_seconds)
+    {
         if opening > departure_time || closing < arrival_time {
             activity_start = departure_time;
             activity_end = departure_time;
@@ -2586,16 +2797,15 @@ fn score_activity(
     }
 
     if params.typical_duration_seconds > 0.0 {
-        let zero_utility_duration_h =
-            (params.typical_duration_seconds * (-1.0_f64).exp()) / 3600.0;
+        let zero_utility_duration_h = (params.typical_duration_seconds * (-1.0_f64).exp()) / 3600.0;
         let zero_utility_duration_s = zero_utility_duration_h * 3600.0;
         if duration >= zero_utility_duration_s {
             score += marginal_utility_of_performing_s
                 * params.typical_duration_seconds
                 * ((duration / 3600.0) / zero_utility_duration_h).ln();
         } else {
-            let slope_at_zero =
-                marginal_utility_of_performing_s * params.typical_duration_seconds / zero_utility_duration_s;
+            let slope_at_zero = marginal_utility_of_performing_s * params.typical_duration_seconds
+                / zero_utility_duration_s;
             score -= slope_at_zero * (zero_utility_duration_s - duration);
         }
     }
@@ -2624,13 +2834,21 @@ fn score_leg(
     travel_time_seconds: f64,
     seen_modes: &mut BTreeMap<String, ()>,
 ) -> f64 {
-    let params = scoring.mode_params.get(&leg.mode).cloned().unwrap_or_default();
+    let params = scoring
+        .mode_params
+        .get(&leg.mode)
+        .cloned()
+        .unwrap_or_default();
     let distance_m = 0.0;
     let first_mode_use = seen_modes.insert(leg.mode.clone(), ()).is_none();
 
     travel_time_seconds * params.marginal_utility_of_traveling_utils_per_hour / 3600.0
         + distance_m * params.marginal_utility_of_distance_utils_per_meter
-        + if first_mode_use { params.constant + params.daily_utility_constant } else { 0.0 }
+        + if first_mode_use {
+            params.constant + params.daily_utility_constant
+        } else {
+            0.0
+        }
 }
 
 fn leg_travel_time_seconds(
@@ -2702,7 +2920,11 @@ fn route_link_sequence<'a>(
     links
 }
 
-fn find_link_between_nodes<'a>(network: &'a Network, from_node_id: &str, to_node_id: &str) -> Option<&'a str> {
+fn find_link_between_nodes<'a>(
+    network: &'a Network,
+    from_node_id: &str,
+    to_node_id: &str,
+) -> Option<&'a str> {
     network
         .links
         .values()
@@ -2769,7 +2991,11 @@ fn shortest_route_node_ids_for_departure(
             break;
         }
 
-        for link in network.links.values().filter(|link| link.from_node_id == current.node_id) {
+        for link in network
+            .links
+            .values()
+            .filter(|link| link.from_node_id == current.node_id)
+        {
             let current_departure_time_s = departure_time_s + (current.cost_ms as f64) / 1000.0;
             let link_cost_ms = to_millis(link_cost_for_departure(
                 &link.id,
@@ -2820,7 +3046,12 @@ fn link_cost_for_departure(
             profile
                 .get(&bucket)
                 .copied()
-                .or_else(|| profile.range(..=bucket).next_back().map(|(_, value)| *value))
+                .or_else(|| {
+                    profile
+                        .range(..=bucket)
+                        .next_back()
+                        .map(|(_, value)| *value)
+                })
                 .or_else(|| profile.range(bucket..).next().map(|(_, value)| *value))
         })
         .or_else(|| link_costs.get(link_id).copied())
@@ -2869,7 +3100,10 @@ mod tests {
             route_node_ids: vec!["n1".to_string(), "n2".to_string()],
         };
 
-        assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 50.0);
+        assert_eq!(
+            leg_distance_m(&leg, Some(&previous), Some(&next), &network),
+            50.0
+        );
     }
 
     #[test]
@@ -2904,7 +3138,10 @@ mod tests {
             route_node_ids: vec![],
         };
 
-        assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 0.0);
+        assert_eq!(
+            leg_distance_m(&leg, Some(&previous), Some(&next), &network),
+            0.0
+        );
     }
 
     #[test]
@@ -2945,8 +3182,14 @@ mod tests {
             },
         };
 
-        let summary =
-            apply_replanning_hook(&mut scenario, &[1.0], &[Vec::new()], &BTreeMap::new(), &BTreeMap::new(), 0);
+        let summary = apply_replanning_hook(
+            &mut scenario,
+            &[1.0],
+            &[Vec::new()],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            0,
+        );
 
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(scenario.population.persons[0].selected_plan_index, 1);

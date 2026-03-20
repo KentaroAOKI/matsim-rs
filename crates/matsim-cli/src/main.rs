@@ -4,8 +4,9 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
-    analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans, explain_person_reroute,
-    explain_person_reroute_score, explain_person_score, run_iterations_with_state, write_outputs,
+    analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans,
+    explain_person_reroute, explain_person_reroute_score, explain_person_score,
+    run_iterations_with_state, write_outputs,
 };
 use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
@@ -137,6 +138,22 @@ enum Command {
         iteration: Option<u32>,
         #[arg(long)]
         limit: Option<usize>,
+        #[arg(long)]
+        markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    InspectBottleneck {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        link_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        csv: bool,
         #[arg(long)]
         markdown: bool,
         #[arg(long)]
@@ -275,7 +292,16 @@ fn run() -> Result<(), CliError> {
             csv,
             markdown,
             output,
-        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
+        } => inspect_population_command(
+            &config,
+            iteration,
+            sort_by,
+            limit,
+            min_reroute_gain,
+            csv,
+            markdown,
+            output,
+        ),
         Command::InspectNetwork {
             config,
             iteration,
@@ -285,7 +311,9 @@ fn run() -> Result<(), CliError> {
             csv,
             markdown,
             output,
-        } => inspect_network_command(&config, iteration, sort_by, limit, min_delay, csv, markdown, output),
+        } => inspect_network_command(
+            &config, iteration, sort_by, limit, min_delay, csv, markdown, output,
+        ),
         Command::InspectReroutes {
             config,
             iteration,
@@ -294,7 +322,15 @@ fn run() -> Result<(), CliError> {
             csv,
             markdown,
             output,
-        } => inspect_reroutes_command(&config, iteration, limit, min_score_delta, csv, markdown, output),
+        } => inspect_reroutes_command(
+            &config,
+            iteration,
+            limit,
+            min_score_delta,
+            csv,
+            markdown,
+            output,
+        ),
         Command::InspectRerouteScores {
             config,
             iteration,
@@ -302,6 +338,15 @@ fn run() -> Result<(), CliError> {
             markdown,
             output,
         } => inspect_reroute_scores_command(&config, iteration, limit, markdown, output),
+        Command::InspectBottleneck {
+            config,
+            link_id,
+            iteration,
+            limit,
+            csv,
+            markdown,
+            output,
+        } => inspect_bottleneck_command(&config, &link_id, iteration, limit, csv, markdown, output),
         Command::AnalyzeEvents { config } => analyze_events_command(&config),
         Command::AnalyzeEventsFile { events } => analyze_events_file_command(&events),
         Command::AnalyzeLinkEvents { config } => analyze_link_events_command(&config),
@@ -314,7 +359,10 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     let (output, final_state) = run_iterations_with_state(&scenario);
     let output_dir = resolve_output_dir(config_path, &scenario.config.output_directory);
     write_outputs(&output_dir, &output)?;
-    write_population(&output_dir.join("output_plans.xml"), &final_state.population)?;
+    write_population(
+        &output_dir.join("output_plans.xml"),
+        &final_state.population,
+    )?;
 
     println!("random_seed={}", scenario.config.random_seed);
     println!("persons={}", scenario.population.persons.len());
@@ -342,9 +390,16 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
             );
         }
         let mut bottlenecks = last.observed_link_costs.clone();
-        bottlenecks.sort_by(|left, right| right.travel_time_seconds.total_cmp(&left.travel_time_seconds));
+        bottlenecks.sort_by(|left, right| {
+            right
+                .travel_time_seconds
+                .total_cmp(&left.travel_time_seconds)
+        });
         for stat in bottlenecks.into_iter().take(3) {
-            println!("last_iteration_link_cost[{}]={:.6}", stat.link_id, stat.travel_time_seconds);
+            println!(
+                "last_iteration_link_cost[{}]={:.6}",
+                stat.link_id, stat.travel_time_seconds
+            );
         }
     }
     println!("output_dir={}", output_dir.display());
@@ -410,7 +465,10 @@ fn analyze_link_events_command(config_path: &Path) -> Result<(), CliError> {
     for analysis in analyses {
         println!(
             "{};{};{:.6};{}",
-            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
+            analysis.iteration,
+            analysis.link_id,
+            analysis.avg_travel_time_seconds,
+            analysis.traversals
         );
     }
     Ok(())
@@ -424,7 +482,10 @@ fn analyze_link_events_file_command(events_path: &Path) -> Result<(), CliError> 
     for analysis in analyses {
         println!(
             "{};{};{:.6};{}",
-            analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
+            analysis.iteration,
+            analysis.link_id,
+            analysis.avg_travel_time_seconds,
+            analysis.traversals
         );
     }
     Ok(())
@@ -506,10 +567,14 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn explain_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+fn explain_command(
+    config_path: &Path,
+    person_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
-    let breakdown =
-        explain_person_score(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let breakdown = explain_person_score(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", breakdown.person_id);
     if let Some(iteration) = iteration {
@@ -525,7 +590,11 @@ fn explain_command(config_path: &Path, person_id: &str, iteration: Option<u32>) 
     Ok(())
 }
 
-fn explain_link_command(config_path: &Path, link_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+fn explain_link_command(
+    config_path: &Path,
+    link_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
     let (output, _) = run_iterations_with_state(&scenario);
     let target_iteration = iteration.unwrap_or(output.last_iteration);
@@ -559,20 +628,30 @@ fn explain_link_command(config_path: &Path, link_id: &str, iteration: Option<u32
     println!("freespeed_travel_time_seconds={:.6}", freespeed_travel_time);
     println!("observed_travel_time_seconds={:.6}", observed_travel_time);
     if let Some(event_stat) = event_stat {
-        println!("event_travel_time_seconds={:.6}", event_stat.avg_travel_time_seconds);
+        println!(
+            "event_travel_time_seconds={:.6}",
+            event_stat.avg_travel_time_seconds
+        );
         println!("traversals={}", event_stat.traversals);
     } else {
         println!("event_travel_time_seconds={:.6}", freespeed_travel_time);
         println!("traversals=0");
     }
-    println!("avg_delay_seconds={:.6}", (observed_travel_time - freespeed_travel_time).max(0.0));
+    println!(
+        "avg_delay_seconds={:.6}",
+        (observed_travel_time - freespeed_travel_time).max(0.0)
+    );
     Ok(())
 }
 
-fn explain_reroute_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+fn explain_reroute_command(
+    config_path: &Path,
+    person_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
-    let explanation =
-        explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let explanation = explain_person_reroute(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", explanation.person_id);
     if let Some(iteration) = iteration {
@@ -605,7 +684,10 @@ fn explain_reroute_score_command(
     }
     println!("current_total_score={:.6}", breakdown.current_total_score);
     println!("rerouted_total_score={:.6}", breakdown.rerouted_total_score);
-    println!("delta={:.6}", breakdown.rerouted_total_score - breakdown.current_total_score);
+    println!(
+        "delta={:.6}",
+        breakdown.rerouted_total_score - breakdown.current_total_score
+    );
     for item in breakdown.items {
         println!(
             "{} current={:.6} rerouted={:.6} delta={:.6}",
@@ -615,10 +697,14 @@ fn explain_reroute_score_command(
     Ok(())
 }
 
-fn explain_plans_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+fn explain_plans_command(
+    config_path: &Path,
+    person_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
-    let explanation =
-        explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let explanation = explain_person_plans(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", explanation.person_id);
     if let Some(iteration) = iteration {
@@ -641,14 +727,18 @@ fn explain_plans_command(config_path: &Path, person_id: &str, iteration: Option<
     Ok(())
 }
 
-fn inspect_person_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+fn inspect_person_command(
+    config_path: &Path,
+    person_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
-    let plans =
-        explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
-    let reroute =
-        explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
-    let score =
-        explain_person_score(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let plans = explain_person_plans(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let reroute = explain_person_reroute(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let score = explain_person_score(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", person_id);
     if let Some(iteration) = iteration {
@@ -708,12 +798,12 @@ fn inspect_population_command(
     let mut rows = Vec::new();
 
     for person in &scenario.population.persons {
-        let plans =
-            explain_person_plans(&scenario, &person.id).ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
+        let plans = explain_person_plans(&scenario, &person.id)
+            .ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
         let reroute = explain_person_reroute(&scenario, &person.id)
             .ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
-        let score =
-            explain_person_score(&scenario, &person.id).ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
+        let score = explain_person_score(&scenario, &person.id)
+            .ok_or_else(|| CliError::PersonNotFound(person.id.clone()))?;
         let reroute_gain = reroute
             .legs
             .iter()
@@ -740,11 +830,21 @@ fn inspect_population_command(
 
     match sort_by {
         PopulationSortKey::Id => rows.sort_by(|left, right| left.0.cmp(&right.0)),
-        PopulationSortKey::Score => rows.sort_by(|left, right| right.3.total_cmp(&left.3).then_with(|| left.0.cmp(&right.0))),
-        PopulationSortKey::RerouteGain => {
-            rows.sort_by(|left, right| right.4.total_cmp(&left.4).then_with(|| left.0.cmp(&right.0)))
+        PopulationSortKey::Score => rows.sort_by(|left, right| {
+            right
+                .3
+                .total_cmp(&left.3)
+                .then_with(|| left.0.cmp(&right.0))
+        }),
+        PopulationSortKey::RerouteGain => rows.sort_by(|left, right| {
+            right
+                .4
+                .total_cmp(&left.4)
+                .then_with(|| left.0.cmp(&right.0))
+        }),
+        PopulationSortKey::Plans => {
+            rows.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)))
         }
-        PopulationSortKey::Plans => rows.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0))),
     }
 
     if let Some(limit) = limit {
@@ -753,7 +853,9 @@ fn inspect_population_command(
 
     let mut text = String::new();
     if csv {
-        text.push_str("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n");
+        text.push_str(
+            "person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n",
+        );
         for row in rows {
             text.push_str(&format!(
                 "{};{};{};{:.6};{:.6};{}\n",
@@ -768,7 +870,10 @@ fn inspect_population_command(
         if let Some(iteration) = iteration {
             text.push_str(&format!("\n- iteration: {iteration}\n"));
         }
-        text.push_str(&format!("- persons: {}\n", scenario.population.persons.len()));
+        text.push_str(&format!(
+            "- persons: {}\n",
+            scenario.population.persons.len()
+        ));
         text.push_str(&format!(
             "- sort_by: {}\n",
             match sort_by {
@@ -800,17 +905,22 @@ fn inspect_population_command(
         text.push_str(&format!("iteration={iteration}\n"));
     }
     text.push_str(&format!("persons={}\n", scenario.population.persons.len()));
-    text.push_str(&format!("sort_by={}\n", match sort_by {
-        PopulationSortKey::Id => "id",
-        PopulationSortKey::Score => "score",
-        PopulationSortKey::RerouteGain => "reroute-gain",
-        PopulationSortKey::Plans => "plans",
-    }));
+    text.push_str(&format!(
+        "sort_by={}\n",
+        match sort_by {
+            PopulationSortKey::Id => "id",
+            PopulationSortKey::Score => "score",
+            PopulationSortKey::RerouteGain => "reroute-gain",
+            PopulationSortKey::Plans => "plans",
+        }
+    ));
     if let Some(limit) = limit {
         text.push_str(&format!("limit={limit}\n"));
     }
     text.push_str(&format!("min_reroute_gain={min_reroute_gain:.6}\n"));
-    text.push_str("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n");
+    text.push_str(
+        "person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n",
+    );
     for row in rows {
         text.push_str(&format!(
             "{};{};{};{:.6};{:.6};{}\n",
@@ -881,11 +991,21 @@ fn inspect_network_command(
 
     match sort_by {
         NetworkSortKey::Id => rows.sort_by(|left, right| left.0.cmp(&right.0)),
-        NetworkSortKey::Delay => rows.sort_by(|left, right| right.4.total_cmp(&left.4).then_with(|| left.0.cmp(&right.0))),
-        NetworkSortKey::TravelTime => {
-            rows.sort_by(|left, right| right.2.total_cmp(&left.2).then_with(|| left.0.cmp(&right.0)))
+        NetworkSortKey::Delay => rows.sort_by(|left, right| {
+            right
+                .4
+                .total_cmp(&left.4)
+                .then_with(|| left.0.cmp(&right.0))
+        }),
+        NetworkSortKey::TravelTime => rows.sort_by(|left, right| {
+            right
+                .2
+                .total_cmp(&left.2)
+                .then_with(|| left.0.cmp(&right.0))
+        }),
+        NetworkSortKey::Traversals => {
+            rows.sort_by(|left, right| right.5.cmp(&left.5).then_with(|| left.0.cmp(&right.0)))
         }
-        NetworkSortKey::Traversals => rows.sort_by(|left, right| right.5.cmp(&left.5).then_with(|| left.0.cmp(&right.0))),
     }
 
     if let Some(limit) = limit {
@@ -921,7 +1041,9 @@ fn inspect_network_command(
         if let Some(limit) = limit {
             text.push_str(&format!("- limit: {limit}\n"));
         }
-        text.push_str("\n| link_id | freespeed_tt | observed_tt | event_tt | avg_delay | traversals |\n");
+        text.push_str(
+            "\n| link_id | freespeed_tt | observed_tt | event_tt | avg_delay | traversals |\n",
+        );
         text.push_str("|---|---:|---:|---:|---:|---:|\n");
         for row in rows {
             text.push_str(&format!(
@@ -1013,7 +1135,12 @@ fn inspect_reroutes_command(
         .filter(|row| row.3 >= min_score_delta)
         .collect::<Vec<_>>();
 
-    rows.sort_by(|left, right| right.3.total_cmp(&left.3).then_with(|| left.0.cmp(&right.0)));
+    rows.sort_by(|left, right| {
+        right
+            .3
+            .total_cmp(&left.3)
+            .then_with(|| left.0.cmp(&right.0))
+    });
     if let Some(limit) = limit {
         rows.truncate(limit);
     }
@@ -1091,9 +1218,7 @@ fn inspect_reroute_scores_command(
             .ok_or_else(|| CliError::PersonNotFound(detail.person_id.clone()))?;
         for (component_index, item) in breakdown.items.into_iter().enumerate() {
             let key = format!("{:02}:{}", component_index, item.label);
-            let entry = aggregates
-                .entry(key)
-                .or_insert((item.label, 0.0, 0, 0));
+            let entry = aggregates.entry(key).or_insert((item.label, 0.0, 0, 0));
             entry.1 += item.delta;
             entry.2 += 1;
             if item.delta > 0.0 {
@@ -1109,13 +1234,22 @@ fn inspect_reroute_scores_command(
                 component,
                 label,
                 total_delta,
-                if count > 0 { total_delta / count as f64 } else { 0.0 },
+                if count > 0 {
+                    total_delta / count as f64
+                } else {
+                    0.0
+                },
                 count,
                 positive_count,
             )
         })
         .collect::<Vec<_>>();
-    rows.sort_by(|left, right| right.2.total_cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    rows.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+    });
     if let Some(limit) = limit {
         rows.truncate(limit);
     }
@@ -1131,7 +1265,9 @@ fn inspect_reroute_scores_command(
         if let Some(limit) = limit {
             text.push_str(&format!("- limit: {limit}\n"));
         }
-        text.push_str("\n| component | label | total_delta | avg_delta | count | positive_count |\n");
+        text.push_str(
+            "\n| component | label | total_delta | avg_delta | count | positive_count |\n",
+        );
         text.push_str("|---|---|---:|---:|---:|---:|\n");
         for row in rows {
             text.push_str(&format!(
@@ -1160,6 +1296,128 @@ fn inspect_reroute_scores_command(
     emit_text(&text, output)
 }
 
+fn inspect_bottleneck_command(
+    config_path: &Path,
+    link_id: &str,
+    iteration: Option<u32>,
+    limit: Option<usize>,
+    csv: bool,
+    markdown: bool,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let (run_output, _) = run_iterations_with_state(&scenario);
+    let target_iteration = iteration.unwrap_or(run_output.last_iteration);
+    let selected = run_output
+        .iterations
+        .iter()
+        .find(|candidate| candidate.iteration == target_iteration)
+        .ok_or(CliError::IterationNotFound {
+            requested: target_iteration,
+            last_available: run_output.last_iteration,
+        })?;
+
+    let person_scores = selected
+        .person_score_stats
+        .iter()
+        .map(|stat| (stat.person_id.clone(), stat))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let reroute_scores = selected
+        .replanning_summary
+        .reroute_details
+        .iter()
+        .map(|detail| {
+            (
+                detail.person_id.clone(),
+                detail.estimated_rerouted_score - detail.previous_score,
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut rows = selected
+        .link_traversals
+        .iter()
+        .filter(|traversal| traversal.link_id == link_id)
+        .map(|traversal| {
+            let person_score = person_scores.get(&traversal.person_id);
+            let queue_delay = (traversal.queue_exit_time_seconds
+                - traversal.free_speed_exit_time_seconds)
+                .max(0.0);
+            let reroute_delta = reroute_scores
+                .get(&traversal.person_id)
+                .copied()
+                .unwrap_or(0.0);
+            (
+                traversal.same_enter_rank,
+                traversal.person_id.clone(),
+                traversal.leg_index,
+                traversal.enter_time_seconds,
+                traversal.same_enter_group_size,
+                queue_delay,
+                person_score.map(|value| value.executed).unwrap_or(0.0),
+                person_score.map(|value| value.worst).unwrap_or(0.0),
+                person_score.map(|value| value.average).unwrap_or(0.0),
+                person_score.map(|value| value.best).unwrap_or(0.0),
+                reroute_delta,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    if let Some(limit) = limit {
+        rows.truncate(limit);
+    }
+
+    let mut text = String::new();
+    if csv {
+        text.push_str("same_enter_rank;person_id;leg_index;enter_time_seconds;same_enter_group_size;queue_delay_seconds;executed;worst;average;best;estimated_reroute_score_delta\n");
+        for row in rows {
+            text.push_str(&format!(
+                "{};{};{};{:.6};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}\n",
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    if markdown {
+        text.push_str("# Bottleneck Inspection\n");
+        text.push_str(&format!("\n- iteration: {target_iteration}\n"));
+        text.push_str(&format!("- link_id: {link_id}\n"));
+        text.push_str(&format!("- traversals: {}\n", rows.len()));
+        if let Some(limit) = limit {
+            text.push_str(&format!("- limit: {limit}\n"));
+        }
+        text.push_str(
+            "\n| rank | person_id | leg | enter_time | group_size | queue_delay | executed | worst | average | best | reroute_delta |\n",
+        );
+        text.push_str("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for row in rows {
+            text.push_str(&format!(
+                "| {} | {} | {} | {:.6} | {} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} |\n",
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10
+            ));
+        }
+        return emit_text(&text, output);
+    }
+
+    text.push_str(&format!("iteration={target_iteration}\n"));
+    text.push_str(&format!("link_id={link_id}\n"));
+    if let Some(limit) = limit {
+        text.push_str(&format!("limit={limit}\n"));
+    }
+    text.push_str(
+        "same_enter_rank;person_id;leg_index;enter_time_seconds;same_enter_group_size;queue_delay_seconds;executed;worst;average;best;estimated_reroute_score_delta\n",
+    );
+    for row in rows {
+        text.push_str(&format!(
+            "{};{};{};{:.6};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10
+        ));
+    }
+    emit_text(&text, output)
+}
+
 fn emit_text(text: &str, output: Option<PathBuf>) -> Result<(), CliError> {
     if let Some(path) = output {
         fs::write(&path, text).map_err(|source| CliError::ReadFile {
@@ -1172,11 +1430,15 @@ fn emit_text(text: &str, output: Option<PathBuf>) -> Result<(), CliError> {
     Ok(())
 }
 
-fn resolve_scenario_for_iteration(config_path: &Path, iteration: Option<u32>) -> Result<matsim_core::Scenario, CliError> {
+fn resolve_scenario_for_iteration(
+    config_path: &Path,
+    iteration: Option<u32>,
+) -> Result<matsim_core::Scenario, CliError> {
     let scenario = load_scenario(config_path)?;
     if let Some(iteration) = iteration {
         let mut scenario_for_run = scenario.clone();
-        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
+        scenario_for_run.config.last_iteration =
+            iteration.min(scenario_for_run.config.last_iteration);
         let (_, final_state) = run_iterations_with_state(&scenario_for_run);
         Ok(final_state)
     } else {
@@ -1184,13 +1446,17 @@ fn resolve_scenario_for_iteration(config_path: &Path, iteration: Option<u32>) ->
     }
 }
 
-fn resolve_scenario_before_iteration(config_path: &Path, iteration: u32) -> Result<matsim_core::Scenario, CliError> {
+fn resolve_scenario_before_iteration(
+    config_path: &Path,
+    iteration: u32,
+) -> Result<matsim_core::Scenario, CliError> {
     if iteration == 0 {
         return load_scenario(config_path).map_err(CliError::from);
     }
     let scenario = load_scenario(config_path)?;
     let mut scenario_for_run = scenario.clone();
-    scenario_for_run.config.last_iteration = (iteration - 1).min(scenario_for_run.config.last_iteration);
+    scenario_for_run.config.last_iteration =
+        (iteration - 1).min(scenario_for_run.config.last_iteration);
     let (_, final_state) = run_iterations_with_state(&scenario_for_run);
     Ok(final_state)
 }
