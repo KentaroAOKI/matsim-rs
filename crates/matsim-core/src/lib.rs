@@ -403,6 +403,16 @@ pub struct NodeBatchStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeRunStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub inbound_link_id: String,
+    pub traversals: usize,
+    pub max_consecutive_releases: usize,
+    pub avg_consecutive_releases: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1506,6 +1516,33 @@ pub fn write_node_batchstats(
     Ok(())
 }
 
+pub fn write_node_runstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;inbound_link_id;traversals;max_consecutive_releases;avg_consecutive_releases"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_runs(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{};{:.6}",
+            stat.iteration,
+            stat.node_id,
+            stat.inbound_link_id,
+            stat.traversals,
+            stat.max_consecutive_releases,
+            stat.avg_consecutive_releases
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -2076,6 +2113,76 @@ pub fn analyze_node_batches(output: &RunOutput, network: &Network) -> Vec<NodeBa
             .cmp(&right.iteration)
             .then_with(|| left.node_id.cmp(&right.node_id))
             .then_with(|| left.ready_time_seconds.total_cmp(&right.ready_time_seconds))
+    });
+    stats
+}
+
+pub fn analyze_node_runs(output: &RunOutput, network: &Network) -> Vec<NodeRunStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<String, Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            groups
+                .entry(link.to_node_id.clone())
+                .or_default()
+                .push(traversal);
+        }
+        for (node_id, mut traversals) in groups {
+            traversals.sort_by(|left, right| {
+                left.queue_exit_time_seconds
+                    .total_cmp(&right.queue_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let mut runs = BTreeMap::<String, Vec<usize>>::new();
+            let mut current_link: Option<&str> = None;
+            let mut current_len = 0usize;
+            for traversal in traversals.iter() {
+                if current_link == Some(traversal.link_id.as_str()) {
+                    current_len += 1;
+                } else {
+                    if let Some(link_id) = current_link {
+                        runs.entry(link_id.to_string()).or_default().push(current_len);
+                    }
+                    current_link = Some(traversal.link_id.as_str());
+                    current_len = 1;
+                }
+            }
+            if let Some(link_id) = current_link {
+                runs.entry(link_id.to_string()).or_default().push(current_len);
+            }
+            let traversal_counts = traversals.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, traversal| {
+                *acc.entry(traversal.link_id.clone()).or_default() += 1;
+                acc
+            });
+            for (inbound_link_id, run_lengths) in runs {
+                let traversals = *traversal_counts.get(&inbound_link_id).unwrap_or(&0);
+                let max_consecutive_releases = run_lengths.iter().copied().max().unwrap_or(0);
+                let avg_consecutive_releases = if run_lengths.is_empty() {
+                    0.0
+                } else {
+                    run_lengths.iter().sum::<usize>() as f64 / run_lengths.len() as f64
+                };
+                stats.push(NodeRunStat {
+                    iteration: iteration.iteration,
+                    node_id: node_id.clone(),
+                    inbound_link_id,
+                    traversals,
+                    max_consecutive_releases,
+                    avg_consecutive_releases,
+                });
+            }
+        }
+    }
+    stats.sort_by(|left, right| {
+        left.iteration
+            .cmp(&right.iteration)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+            .then_with(|| left.inbound_link_id.cmp(&right.inbound_link_id))
     });
     stats
 }
