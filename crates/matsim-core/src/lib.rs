@@ -141,6 +141,21 @@ pub struct ScoreStats {
     pub avg_best: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PersonScoreBreakdown {
+    pub person_id: String,
+    pub total_score: f64,
+    pub items: Vec<ScoreBreakdownItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScoreBreakdownItem {
+    pub label: String,
+    pub start_time_seconds: f64,
+    pub end_time_seconds: f64,
+    pub score: f64,
+}
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("failed to create output directory {path}: {source}")]
@@ -245,6 +260,11 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
         output.last_iteration,
     )?;
     Ok(())
+}
+
+pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
+    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    Some(score_plan_breakdown(person, &scenario.config.scoring, &scenario.network))
 }
 
 fn write_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
@@ -368,6 +388,24 @@ fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity
 }
 
 fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
+    score_plan_internal(plan, scoring, network).total_score
+}
+
+fn score_plan_breakdown(person: &Person, scoring: &ScoringConfig, network: &Network) -> PersonScoreBreakdown {
+    let breakdown = score_plan_internal(&person.selected_plan, scoring, network);
+    PersonScoreBreakdown {
+        person_id: person.id.clone(),
+        total_score: breakdown.total_score,
+        items: breakdown.items,
+    }
+}
+
+struct PlanScoreBreakdown {
+    total_score: f64,
+    items: Vec<ScoreBreakdownItem>,
+}
+
+fn score_plan_internal(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> PlanScoreBreakdown {
     let activities: Vec<&Activity> = plan
         .elements
         .iter()
@@ -377,10 +415,14 @@ fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
         })
         .collect();
     if activities.is_empty() {
-        return 0.0;
+        return PlanScoreBreakdown {
+            total_score: 0.0,
+            items: Vec::new(),
+        };
     }
 
     let mut score = 0.0_f64;
+    let mut items = Vec::<ScoreBreakdownItem>::new();
     let mut current_time = 0.0_f64;
     let mut activity_windows: Vec<(usize, f64, f64)> = Vec::with_capacity(activities.len());
     let mut seen_modes = BTreeMap::<String, ()>::new();
@@ -405,7 +447,14 @@ fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
             PlanElement::Leg(leg) => {
                 let travel_time =
                     leg_travel_time_seconds(leg, last_activity, next_activity(plan, leg), network);
-                score += score_leg(leg, scoring, network, travel_time, &mut seen_modes);
+                let leg_score = score_leg(leg, scoring, network, travel_time, &mut seen_modes);
+                score += leg_score;
+                items.push(ScoreBreakdownItem {
+                    label: format!("leg:{}", leg.mode),
+                    start_time_seconds: current_time,
+                    end_time_seconds: current_time + travel_time,
+                    score: leg_score,
+                });
                 current_time += travel_time;
             }
         }
@@ -424,17 +473,44 @@ fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
         let last = activities.last().unwrap();
         let (_, _, first_end) = activity_windows[0];
         let (_, last_start, _) = activity_windows[activity_windows.len() - 1];
-        score += score_activity(last, scoring, last_start, Some(first_end + 24.0 * 3600.0));
+        let overnight_score = score_activity(last, scoring, last_start, Some(first_end + 24.0 * 3600.0));
+        score += overnight_score;
+        items.push(ScoreBreakdownItem {
+            label: format!("activity:{}(overnight)", last.activity_type),
+            start_time_seconds: last_start,
+            end_time_seconds: first_end + 24.0 * 3600.0,
+            score: overnight_score,
+        });
         for (index, start, end) in activity_windows.iter().copied().skip(1).take(activity_windows.len().saturating_sub(2)) {
-            score += score_activity(activities[index], scoring, start, Some(end));
+            let activity_score = score_activity(activities[index], scoring, start, Some(end));
+            score += activity_score;
+            items.push(ScoreBreakdownItem {
+                label: format!("activity:{}", activities[index].activity_type),
+                start_time_seconds: start,
+                end_time_seconds: end,
+                score: activity_score,
+            });
         }
-        return score;
+        return PlanScoreBreakdown {
+            total_score: score,
+            items,
+        };
     }
 
     for (index, start, end) in activity_windows {
-        score += score_activity(activities[index], scoring, start, Some(end));
+        let activity_score = score_activity(activities[index], scoring, start, Some(end));
+        score += activity_score;
+        items.push(ScoreBreakdownItem {
+            label: format!("activity:{}", activities[index].activity_type),
+            start_time_seconds: start,
+            end_time_seconds: end,
+            score: activity_score,
+        });
     }
-    score
+    PlanScoreBreakdown {
+        total_score: score,
+        items,
+    }
 }
 
 fn score_activity(

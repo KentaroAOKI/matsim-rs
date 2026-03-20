@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use matsim_core::{run_single_iteration, write_outputs};
+use matsim_core::{explain_person_score, run_single_iteration, write_outputs};
 use matsim_io::load_scenario;
 use thiserror::Error;
 
@@ -26,6 +26,12 @@ enum Command {
         #[arg(long)]
         right: PathBuf,
     },
+    Explain {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        person_id: String,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -40,6 +46,8 @@ enum CliError {
         #[source]
         source: std::io::Error,
     },
+    #[error("person `{0}` not found")]
+    PersonNotFound(String),
 }
 
 fn main() {
@@ -54,6 +62,7 @@ fn run() -> Result<(), CliError> {
     match cli.command {
         Command::Run { config } => run_command(&config),
         Command::Compare { left, right } => compare_command(&left, &right),
+        Command::Explain { config, person_id } => explain_command(&config, &person_id),
     }
 }
 
@@ -111,6 +120,22 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
                 println!("  right: {right_line}");
             }
         }
+    }
+    Ok(())
+}
+
+fn explain_command(config_path: &Path, person_id: &str) -> Result<(), CliError> {
+    let scenario = load_scenario(config_path)?;
+    let breakdown =
+        explain_person_score(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+
+    println!("person_id={}", breakdown.person_id);
+    println!("total_score={:.6}", breakdown.total_score);
+    for item in breakdown.items {
+        println!(
+            "{} start={} end={} score={:.6}",
+            item.label, item.start_time_seconds, item.end_time_seconds, item.score
+        );
     }
     Ok(())
 }
