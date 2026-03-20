@@ -2107,9 +2107,10 @@ fn shortest_route_node_ids_for_departure(
         }
 
         for link in network.links.values().filter(|link| link.from_node_id == current.node_id) {
+            let current_departure_time_s = departure_time_s + (current.cost_ms as f64) / 1000.0;
             let link_cost_ms = to_millis(link_cost_for_departure(
                 &link.id,
-                departure_time_s,
+                current_departure_time_s,
                 link_costs,
                 link_time_profiles,
             ));
