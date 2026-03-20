@@ -75,6 +75,8 @@ enum Command {
         min_reroute_gain: f64,
         #[arg(long)]
         csv: bool,
+        #[arg(long)]
+        markdown: bool,
     },
 }
 
@@ -155,7 +157,8 @@ fn run() -> Result<(), CliError> {
             limit,
             min_reroute_gain,
             csv,
-        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv),
+            markdown,
+        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown),
     }
 }
 
@@ -369,6 +372,7 @@ fn inspect_population_command(
     limit: Option<usize>,
     min_reroute_gain: f64,
     csv: bool,
+    markdown: bool,
 ) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let mut rows = Vec::new();
@@ -421,6 +425,38 @@ fn inspect_population_command(
         println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
         for row in rows {
             println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
+        }
+        return Ok(());
+    }
+
+    if markdown {
+        println!("# Population Inspection");
+        if let Some(iteration) = iteration {
+            println!();
+            println!("- iteration: {iteration}");
+        }
+        println!("- persons: {}", scenario.population.persons.len());
+        println!(
+            "- sort_by: {}",
+            match sort_by {
+                PopulationSortKey::Id => "id",
+                PopulationSortKey::Score => "score",
+                PopulationSortKey::RerouteGain => "reroute-gain",
+                PopulationSortKey::Plans => "plans",
+            }
+        );
+        println!("- min_reroute_gain: {:.6}", min_reroute_gain);
+        if let Some(limit) = limit {
+            println!("- limit: {limit}");
+        }
+        println!();
+        println!("| person_id | selected_plan_index | plans | selected_score | reroute_gain | current_links |");
+        println!("| --- | ---: | ---: | ---: | ---: | --- |");
+        for row in rows {
+            println!(
+                "| {} | {} | {} | {:.6} | {:.6} | {} |",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            );
         }
         return Ok(());
     }
