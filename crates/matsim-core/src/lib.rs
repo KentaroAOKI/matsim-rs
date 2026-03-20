@@ -155,6 +155,7 @@ pub struct IterationOutput {
     pub score_stats: ScoreStats,
     pub plan_memory_stats: PlanMemoryStats,
     pub observed_link_costs: Vec<LinkCostStat>,
+    pub observed_link_profiles: Vec<LinkProfileStat>,
     pub events: Vec<EventRecord>,
     pub replanning_summary: ReplanningSummary,
 }
@@ -238,6 +239,13 @@ pub struct PlanMemoryStats {
 #[derive(Debug, Clone)]
 pub struct LinkCostStat {
     pub link_id: String,
+    pub travel_time_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkProfileStat {
+    pub link_id: String,
+    pub hour_bucket: u32,
     pub travel_time_seconds: f64,
 }
 
@@ -523,6 +531,17 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
             travel_time_seconds: *travel_time_seconds,
         })
         .collect();
+    let observed_link_profiles = simulation
+        .observed_link_time_profiles
+        .iter()
+        .flat_map(|(link_id, profile)| {
+            profile.iter().map(|(hour_bucket, travel_time_seconds)| LinkProfileStat {
+                link_id: link_id.clone(),
+                hour_bucket: *hour_bucket,
+                travel_time_seconds: *travel_time_seconds,
+            })
+        })
+        .collect();
 
     IterationOutput {
         iteration,
@@ -531,6 +550,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         score_stats,
         plan_memory_stats,
         observed_link_costs,
+        observed_link_profiles,
         events: simulation.events,
         replanning_summary,
     }
@@ -933,6 +953,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_modestats(&output_dir.join("modestats.csv"), output)?;
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
+    write_observed_link_profiles(&output_dir.join("observed_link_profiles.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
@@ -1295,6 +1316,23 @@ fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), Core
                 writer,
                 "{};{};{:.6}",
                 iteration.iteration, stat.link_id, stat.travel_time_seconds
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_observed_link_profiles(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;link_id;hour_bucket;travel_time_seconds")
+        .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for stat in &iteration.observed_link_profiles {
+            writeln!(
+                writer,
+                "{};{};{};{:.6}",
+                iteration.iteration, stat.link_id, stat.hour_bucket, stat.travel_time_seconds
             )
             .map_err(|source| write_error(path, source))?;
         }

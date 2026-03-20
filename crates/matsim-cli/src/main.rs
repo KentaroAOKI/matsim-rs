@@ -390,6 +390,7 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
         "modestats.csv",
         "traveldistancestats.csv",
         "observed_link_costs.csv",
+        "observed_link_profiles.csv",
         "eventstats.csv",
         "link_eventstats.csv",
         "replanningstats.csv",
