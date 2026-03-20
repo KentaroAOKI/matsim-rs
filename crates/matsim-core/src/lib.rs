@@ -2227,7 +2227,7 @@ impl Ord for PendingLeg {
         other
             .departure_time_ms
             .cmp(&self.departure_time_ms)
-            .then_with(|| self.person_id.cmp(&other.person_id))
+            .then_with(|| compare_person_ids(&self.person_id, &other.person_id))
             .then_with(|| other.plan_element_index.cmp(&self.plan_element_index))
     }
 }
@@ -2235,6 +2235,13 @@ impl Ord for PendingLeg {
 impl PartialOrd for PendingLeg {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+fn compare_person_ids(left: &str, right: &str) -> Ordering {
+    match (left.parse::<u64>(), right.parse::<u64>()) {
+        (Ok(left_num), Ok(right_num)) => left_num.cmp(&right_num),
+        _ => left.cmp(right),
     }
 }
 
