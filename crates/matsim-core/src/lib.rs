@@ -2597,14 +2597,18 @@ impl QueueLinkState {
     }
 
     fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
-        self.node_flow_state
-            .schedule_release(ready_to_leave_link_s, headway_s)
+        self.node_flow_state.enter_buffer(ready_to_leave_link_s);
+        self.node_flow_state.release_from_buffer(headway_s)
     }
 }
 
 impl NodeFlowState {
-    fn schedule_release(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
-        let exit_time_s = ready_to_leave_link_s.max(self.next_release_time_s);
+    fn enter_buffer(&mut self, ready_to_leave_link_s: f64) {
+        self.next_release_time_s = self.next_release_time_s.max(ready_to_leave_link_s);
+    }
+
+    fn release_from_buffer(&mut self, headway_s: f64) -> f64 {
+        let exit_time_s = self.next_release_time_s;
         self.next_release_time_s = exit_time_s + headway_s;
         exit_time_s
     }
