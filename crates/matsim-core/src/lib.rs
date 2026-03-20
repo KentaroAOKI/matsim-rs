@@ -165,6 +165,7 @@ pub struct ReplanningSummary {
     pub persons_replanned: usize,
     pub plan_delta: isize,
     pub strategy_stats: Vec<StrategyStat>,
+    pub reroute_details: Vec<RerouteStat>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +173,13 @@ pub struct StrategyStat {
     pub strategy_name: String,
     pub sampled: usize,
     pub applied: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RerouteStat {
+    pub person_id: String,
+    pub previous_links: String,
+    pub rerouted_links: String,
 }
 
 #[derive(Debug, Clone)]
@@ -550,6 +558,7 @@ fn apply_replanning_hook(
                     applied: 0,
                 })
                 .collect(),
+            reroute_details: Vec::new(),
         };
     }
 
@@ -560,6 +569,7 @@ fn apply_replanning_hook(
         .map(|person| person.plans.len())
         .sum::<usize>();
     let mut persons_replanned = 0usize;
+    let mut reroute_details = Vec::new();
     let mut strategy_stats = scenario
         .config
         .replanning
@@ -590,7 +600,15 @@ fn apply_replanning_hook(
 
         let replanned = match strategy_name {
             "BestScore" => apply_best_score_strategy(person),
-            "ReRoute" => reroute_selected_plan(person, &scenario.network, observed_link_costs),
+            "ReRoute" => {
+                let detail = reroute_selected_plan_with_stats(person, &scenario.network, observed_link_costs);
+                if let Some(detail) = detail {
+                    reroute_details.push(detail);
+                    true
+                } else {
+                    false
+                }
+            }
             _ => false,
         };
         if replanned {
@@ -616,6 +634,7 @@ fn apply_replanning_hook(
         persons_replanned,
         plan_delta: final_plan_count as isize - initial_plan_count as isize,
         strategy_stats,
+        reroute_details,
     }
 }
 
@@ -746,9 +765,14 @@ fn apply_best_score_strategy(person: &mut Person) -> bool {
     false
 }
 
-fn reroute_selected_plan(person: &mut Person, network: &Network, link_costs: &BTreeMap<String, f64>) -> bool {
+fn reroute_selected_plan_with_stats(
+    person: &mut Person,
+    network: &Network,
+    link_costs: &BTreeMap<String, f64>,
+) -> Option<RerouteStat> {
     let mut rerouted_plan = person.selected_plan().clone();
     let mut rerouted = false;
+    let original_plan = person.selected_plan().clone();
 
     for leg_index in 0..rerouted_plan.elements.len() {
         let previous_link_id = previous_activity_at(&rerouted_plan, leg_index)
@@ -774,9 +798,55 @@ fn reroute_selected_plan(person: &mut Person, network: &Network, link_costs: &BT
         rerouted_plan.score = None;
         person.plans.push(rerouted_plan);
         person.selected_plan_index = person.plans.len() - 1;
+        let previous_links = original_plan
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| match element {
+                PlanElement::Leg(leg) => {
+                    let previous_activity = previous_activity_at(&original_plan, index);
+                    let next_activity = next_activity_at(&original_plan, index);
+                    Some(
+                        route_link_sequence(leg, previous_activity, next_activity, network)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    )
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let rerouted_links = person
+            .selected_plan()
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| match element {
+                PlanElement::Leg(leg) => {
+                    let previous_activity = previous_activity_at(person.selected_plan(), index);
+                    let next_activity = next_activity_at(person.selected_plan(), index);
+                    Some(
+                        route_link_sequence(leg, previous_activity, next_activity, network)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    )
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        return Some(RerouteStat {
+            person_id: person.id.clone(),
+            previous_links,
+            rerouted_links,
+        });
     }
 
-    rerouted
+    None
 }
 
 pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreError> {
@@ -794,6 +864,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
     write_replanningstats(&output_dir.join("replanningstats.csv"), output)?;
+    write_reroutestats(&output_dir.join("reroutestats.csv"), output)?;
     Ok(())
 }
 
@@ -1243,6 +1314,22 @@ fn write_replanningstats(path: &Path, output: &RunOutput) -> Result<(), CoreErro
                 stat.strategy_name,
                 stat.sampled,
                 stat.applied
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_reroutestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;person_id;previous_links;rerouted_links").map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for detail in &iteration.replanning_summary.reroute_details {
+            writeln!(
+                writer,
+                "{};{};{};{}",
+                iteration.iteration, detail.person_id, detail.previous_links, detail.rerouted_links
             )
             .map_err(|source| write_error(path, source))?;
         }

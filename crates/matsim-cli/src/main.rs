@@ -393,6 +393,7 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
         "eventstats.csv",
         "link_eventstats.csv",
         "replanningstats.csv",
+        "reroutestats.csv",
     ] {
         let left_path = left.join(name);
         let right_path = right.join(name);
