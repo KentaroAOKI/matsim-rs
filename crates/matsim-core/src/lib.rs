@@ -1282,6 +1282,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_observed_link_profiles(&output_dir.join("observed_link_profiles.csv"), output)?;
     write_link_traversals(&output_dir.join("link_traversals.csv"), output)?;
     write_queue_delaystats(&output_dir.join("queue_delaystats.csv"), output)?;
+    write_queue_groupstats(&output_dir.join("queue_groupstats.csv"), output)?;
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
@@ -1881,6 +1882,72 @@ fn write_queue_delaystats(path: &Path, output: &RunOutput) -> Result<(), CoreErr
                 },
                 max_delay,
                 traversals
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_queue_groupstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;link_id;enter_time_seconds;group_size;avg_queue_delay_seconds;max_queue_delay_seconds;first_rank_person_id;last_rank_person_id"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<(String, i64), Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            groups
+                .entry((
+                    traversal.link_id.clone(),
+                    to_millis(traversal.enter_time_seconds),
+                ))
+                .or_default()
+                .push(traversal);
+        }
+        for ((link_id, enter_time_ms), traversals) in groups {
+            let group_size = traversals.len();
+            let total_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .sum::<f64>();
+            let max_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .fold(0.0f64, f64::max);
+            let first_rank_person_id = traversals
+                .iter()
+                .min_by_key(|traversal| traversal.same_enter_rank)
+                .map(|traversal| traversal.person_id.clone())
+                .unwrap_or_default();
+            let last_rank_person_id = traversals
+                .iter()
+                .max_by_key(|traversal| traversal.same_enter_rank)
+                .map(|traversal| traversal.person_id.clone())
+                .unwrap_or_default();
+            writeln!(
+                writer,
+                "{};{};{:.6};{};{:.6};{:.6};{};{}",
+                iteration.iteration,
+                link_id,
+                enter_time_ms as f64 / 1000.0,
+                group_size,
+                if group_size > 0 {
+                    total_delay / group_size as f64
+                } else {
+                    0.0
+                },
+                max_delay,
+                first_rank_person_id,
+                last_rank_person_id
             )
             .map_err(|source| write_error(path, source))?;
         }
