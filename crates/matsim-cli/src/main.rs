@@ -83,6 +83,11 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
             "last_iteration_replanning={{strategies_considered:{},persons_replanned:{}}}",
             last.replanning_summary.strategies_considered, last.replanning_summary.persons_replanned
         );
+        let mut bottlenecks = last.observed_link_costs.clone();
+        bottlenecks.sort_by(|left, right| right.travel_time_seconds.total_cmp(&left.travel_time_seconds));
+        for stat in bottlenecks.into_iter().take(3) {
+            println!("last_iteration_link_cost[{}]={:.6}", stat.link_id, stat.travel_time_seconds);
+        }
     }
     println!("output_dir={}", output_dir.display());
     Ok(())

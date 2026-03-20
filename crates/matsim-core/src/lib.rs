@@ -151,6 +151,7 @@ pub struct IterationOutput {
     pub mode_stats: Vec<ModeStat>,
     pub travel_distance_stats: TravelDistanceStats,
     pub score_stats: ScoreStats,
+    pub observed_link_costs: Vec<LinkCostStat>,
     pub replanning_summary: ReplanningSummary,
 }
 
@@ -200,6 +201,12 @@ pub struct ScoreStats {
     pub avg_worst: f64,
     pub avg_average: f64,
     pub avg_best: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkCostStat {
+    pub link_id: String,
+    pub travel_time_seconds: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -374,12 +381,21 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
     };
     let replanning_summary =
         apply_replanning_hook(scenario, &executed_scores, &simulation.observed_link_costs, iteration);
+    let observed_link_costs = simulation
+        .observed_link_costs
+        .iter()
+        .map(|(link_id, travel_time_seconds)| LinkCostStat {
+            link_id: link_id.clone(),
+            travel_time_seconds: *travel_time_seconds,
+        })
+        .collect();
 
     IterationOutput {
         iteration,
         mode_stats,
         travel_distance_stats,
         score_stats,
+        observed_link_costs,
         replanning_summary,
     }
 }
@@ -532,6 +548,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_scorestats(&output_dir.join("scorestats.csv"), output)?;
     write_modestats(&output_dir.join("modestats.csv"), output)?;
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
+    write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
     Ok(())
 }
 
@@ -611,6 +628,22 @@ fn write_traveldistancestats(path: &Path, output: &RunOutput) -> Result<(), Core
             iteration.travel_distance_stats.avg_trip_distance_per_plan_m
         )
         .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(writer, "iteration;link_id;travel_time_seconds").map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for stat in &iteration.observed_link_costs {
+            writeln!(
+                writer,
+                "{};{};{:.6}",
+                iteration.iteration, stat.link_id, stat.travel_time_seconds
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
     }
     Ok(())
 }
