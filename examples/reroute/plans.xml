@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<!DOCTYPE plans SYSTEM "http://www.matsim.org/files/dtd/plans_v4.dtd">
+<plans>
+  <person id="1">
+    <plan selected="yes">
+      <act type="h" x="0" y="0" link="start" end_time="06:00:00" />
+      <leg mode="car">
+        <route>slow target</route>
+      </leg>
+      <act type="w" x="1000" y="0" link="end" />
+    </plan>
+  </person>
+</plans>

@@ -570,4 +570,22 @@ mod tests {
         assert!((output.iterations[1].score_stats.avg_average - 89.910_020).abs() < 1.0e-6);
         assert!((output.iterations[1].score_stats.avg_best - 96.478_115).abs() < 1.0e-6);
     }
+
+    #[test]
+    fn loads_reroute_fixture_and_improves_second_iteration() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/reroute/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let output = run_iterations(&scenario);
+        assert_eq!(output.iterations.len(), 2);
+        assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 1);
+        assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
+        assert!(output.iterations[1].score_stats.avg_executed > output.iterations[0].score_stats.avg_executed);
+        assert!(
+            output.iterations[1].travel_distance_stats.avg_leg_distance_per_person_m
+                < output.iterations[0].travel_distance_stats.avg_leg_distance_per_person_m
+        );
+    }
 }
