@@ -291,6 +291,8 @@ pub struct LinkTraversalStat {
     pub leg_index: usize,
     pub link_id: String,
     pub enter_time_seconds: f64,
+    pub same_enter_rank: usize,
+    pub same_enter_group_size: usize,
     pub free_speed_exit_time_seconds: f64,
     pub queue_exit_time_seconds: f64,
     pub headway_seconds: f64,
@@ -1638,19 +1640,21 @@ fn write_link_traversals(path: &Path, output: &RunOutput) -> Result<(), CoreErro
     let mut writer = csv_writer(path)?;
     writeln!(
         writer,
-        "iteration;person_id;leg_index;link_id;enter_time_seconds;free_speed_exit_time_seconds;queue_exit_time_seconds;queue_delay_seconds;headway_seconds"
+        "iteration;person_id;leg_index;link_id;enter_time_seconds;same_enter_rank;same_enter_group_size;free_speed_exit_time_seconds;queue_exit_time_seconds;queue_delay_seconds;headway_seconds"
     )
     .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for traversal in &iteration.link_traversals {
             writeln!(
                 writer,
-                "{};{};{};{};{:.6};{:.6};{:.6};{:.6};{:.6}",
+                "{};{};{};{};{:.6};{};{};{:.6};{:.6};{:.6};{:.6}",
                 iteration.iteration,
                 traversal.person_id,
                 traversal.leg_index,
                 traversal.link_id,
                 traversal.enter_time_seconds,
+                traversal.same_enter_rank,
+                traversal.same_enter_group_size,
                 traversal.free_speed_exit_time_seconds,
                 traversal.queue_exit_time_seconds,
                 (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds).max(0.0),
@@ -1977,6 +1981,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
     let mut observed_link_counts = BTreeMap::<String, usize>::new();
     let mut observed_link_profile_sums = BTreeMap::<String, BTreeMap<u32, f64>>::new();
     let mut observed_link_profile_counts = BTreeMap::<String, BTreeMap<u32, usize>>::new();
+    let mut same_enter_counts = BTreeMap::<(String, i64), usize>::new();
     let mut link_traversals = Vec::<LinkTraversalStat>::new();
     let mut events = Vec::<EventRecord>::new();
 
@@ -2043,11 +2048,16 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 0.0
             };
             let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
+            let same_enter_key = (link_id.to_string(), to_millis(current_time_s));
+            let same_enter_rank = same_enter_counts.get(&same_enter_key).copied().unwrap_or(0);
+            same_enter_counts.insert(same_enter_key, same_enter_rank + 1);
             link_traversals.push(LinkTraversalStat {
                 person_id: person.id.clone(),
                 leg_index: leg_order,
                 link_id: link_id.to_string(),
                 enter_time_seconds: current_time_s,
+                same_enter_rank,
+                same_enter_group_size: 0,
                 free_speed_exit_time_seconds: free_speed_exit_s,
                 queue_exit_time_seconds: exit_time_s,
                 headway_seconds: headway_s,
@@ -2124,6 +2134,10 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             (link_id.clone(), observed_cost_s)
         })
         .collect();
+    for traversal in &mut link_traversals {
+        let key = (traversal.link_id.clone(), to_millis(traversal.enter_time_seconds));
+        traversal.same_enter_group_size = same_enter_counts.get(&key).copied().unwrap_or(1);
+    }
     let observed_link_time_profiles = observed_link_profile_sums
         .into_iter()
         .map(|(link_id, bucket_sums)| {
