@@ -53,6 +53,14 @@ enum Command {
         #[arg(long)]
         iteration: Option<u32>,
     },
+    InspectPerson {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        person_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -98,6 +106,11 @@ fn run() -> Result<(), CliError> {
             person_id,
             iteration,
         } => explain_plans_command(&config, &person_id, iteration),
+        Command::InspectPerson {
+            config,
+            person_id,
+            iteration,
+        } => inspect_person_command(&config, &person_id, iteration),
     }
 }
 
@@ -186,15 +199,7 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
 }
 
 fn explain_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
-    let scenario = load_scenario(config_path)?;
-    let scenario = if let Some(iteration) = iteration {
-        let mut scenario_for_run = scenario.clone();
-        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
-        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
-        final_state
-    } else {
-        scenario
-    };
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let breakdown =
         explain_person_score(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
@@ -213,15 +218,7 @@ fn explain_command(config_path: &Path, person_id: &str, iteration: Option<u32>) 
 }
 
 fn explain_reroute_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
-    let scenario = load_scenario(config_path)?;
-    let scenario = if let Some(iteration) = iteration {
-        let mut scenario_for_run = scenario.clone();
-        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
-        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
-        final_state
-    } else {
-        scenario
-    };
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let explanation =
         explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
@@ -242,15 +239,7 @@ fn explain_reroute_command(config_path: &Path, person_id: &str, iteration: Optio
 }
 
 fn explain_plans_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
-    let scenario = load_scenario(config_path)?;
-    let scenario = if let Some(iteration) = iteration {
-        let mut scenario_for_run = scenario.clone();
-        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
-        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
-        final_state
-    } else {
-        scenario
-    };
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let explanation =
         explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
@@ -273,4 +262,69 @@ fn explain_plans_command(config_path: &Path, person_id: &str, iteration: Option<
         );
     }
     Ok(())
+}
+
+fn inspect_person_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
+    let plans =
+        explain_person_plans(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let reroute =
+        explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+    let score =
+        explain_person_score(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+
+    println!("person_id={}", person_id);
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
+
+    println!("\n[plans]");
+    println!("selected_plan_index={}", plans.selected_plan_index);
+    println!("plans={}", plans.plans.len());
+    for plan in plans.plans {
+        println!(
+            "plan={} selected={} score={} legs={} activities={}",
+            plan.index,
+            plan.selected,
+            plan.score
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "None".to_string()),
+            plan.leg_count,
+            plan.activity_count
+        );
+    }
+
+    println!("\n[reroute]");
+    for leg in reroute.legs {
+        println!(
+            "leg={} mode={} current_cost={:.6} rerouted_cost={:.6}",
+            leg.leg_index, leg.mode, leg.current_cost_seconds, leg.rerouted_cost_seconds
+        );
+        println!("  current_links={}", leg.current_link_ids.join(","));
+        println!("  rerouted_nodes={}", leg.rerouted_node_ids.join(","));
+        println!("  rerouted_links={}", leg.rerouted_link_ids.join(","));
+    }
+
+    println!("\n[score]");
+    println!("total_score={:.6}", score.total_score);
+    for item in score.items {
+        println!(
+            "{} start={} end={} score={:.6}",
+            item.label, item.start_time_seconds, item.end_time_seconds, item.score
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_scenario_for_iteration(config_path: &Path, iteration: Option<u32>) -> Result<matsim_core::Scenario, CliError> {
+    let scenario = load_scenario(config_path)?;
+    if let Some(iteration) = iteration {
+        let mut scenario_for_run = scenario.clone();
+        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
+        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
+        Ok(final_state)
+    } else {
+        Ok(scenario)
+    }
 }
