@@ -367,6 +367,19 @@ pub struct NodeInboundFlowStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeCrossingStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub inbound_link_id: String,
+    pub person_id: String,
+    pub ready_order: usize,
+    pub release_order: usize,
+    pub ready_time_seconds: f64,
+    pub release_time_seconds: f64,
+    pub queue_delay_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1383,6 +1396,36 @@ pub fn write_node_inbound_flowstats(
     Ok(())
 }
 
+pub fn write_node_crossingstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;inbound_link_id;person_id;ready_order;release_order;ready_time_seconds;release_time_seconds;queue_delay_seconds"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_crossings(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{};{};{:.6};{:.6};{:.6}",
+            stat.iteration,
+            stat.node_id,
+            stat.inbound_link_id,
+            stat.person_id,
+            stat.ready_order,
+            stat.release_order,
+            stat.ready_time_seconds,
+            stat.release_time_seconds,
+            stat.queue_delay_seconds
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -1771,6 +1814,72 @@ pub fn analyze_node_inbound_flows(
                 },
                 max_queue_delay_seconds: max_delay,
             });
+        }
+    }
+    stats
+}
+
+pub fn analyze_node_crossings(output: &RunOutput, network: &Network) -> Vec<NodeCrossingStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<String, Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            groups
+                .entry(link.to_node_id.clone())
+                .or_default()
+                .push(traversal);
+        }
+        for (node_id, traversals) in groups {
+            let mut ready_sorted = traversals.clone();
+            ready_sorted.sort_by(|left, right| {
+                left.free_speed_exit_time_seconds
+                    .total_cmp(&right.free_speed_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let mut release_sorted = traversals;
+            release_sorted.sort_by(|left, right| {
+                left.queue_exit_time_seconds
+                    .total_cmp(&right.queue_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let mut ready_order = BTreeMap::<(String, usize, String), usize>::new();
+            for (index, traversal) in ready_sorted.iter().enumerate() {
+                ready_order.insert(
+                    (
+                        traversal.person_id.clone(),
+                        traversal.leg_index,
+                        traversal.link_id.clone(),
+                    ),
+                    index,
+                );
+            }
+            for (index, traversal) in release_sorted.iter().enumerate() {
+                let key = (
+                    traversal.person_id.clone(),
+                    traversal.leg_index,
+                    traversal.link_id.clone(),
+                );
+                stats.push(NodeCrossingStat {
+                    iteration: iteration.iteration,
+                    node_id: node_id.clone(),
+                    inbound_link_id: traversal.link_id.clone(),
+                    person_id: traversal.person_id.clone(),
+                    ready_order: ready_order.get(&key).copied().unwrap_or(index),
+                    release_order: index,
+                    ready_time_seconds: traversal.free_speed_exit_time_seconds,
+                    release_time_seconds: traversal.queue_exit_time_seconds,
+                    queue_delay_seconds: (traversal.queue_exit_time_seconds
+                        - traversal.free_speed_exit_time_seconds)
+                        .max(0.0),
+                });
+            }
         }
     }
     stats
