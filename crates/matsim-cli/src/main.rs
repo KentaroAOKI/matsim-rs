@@ -273,9 +273,17 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
             last.plan_memory_stats.selected_plan_share
         );
         println!(
-            "last_iteration_replanning={{strategies_considered:{},persons_replanned:{}}}",
-            last.replanning_summary.strategies_considered, last.replanning_summary.persons_replanned
+            "last_iteration_replanning={{strategies_considered:{},persons_replanned:{},plan_delta:{}}}",
+            last.replanning_summary.strategies_considered,
+            last.replanning_summary.persons_replanned,
+            last.replanning_summary.plan_delta
         );
+        for stat in &last.replanning_summary.strategy_stats {
+            println!(
+                "last_iteration_strategy[{}]={{sampled:{},applied:{}}}",
+                stat.strategy_name, stat.sampled, stat.applied
+            );
+        }
         let mut bottlenecks = last.observed_link_costs.clone();
         bottlenecks.sort_by(|left, right| right.travel_time_seconds.total_cmp(&left.travel_time_seconds));
         for stat in bottlenecks.into_iter().take(3) {
@@ -384,6 +392,7 @@ fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
         "observed_link_costs.csv",
         "eventstats.csv",
         "link_eventstats.csv",
+        "replanningstats.csv",
     ] {
         let left_path = left.join(name);
         let right_path = right.join(name);

@@ -163,6 +163,15 @@ pub struct IterationOutput {
 pub struct ReplanningSummary {
     pub strategies_considered: usize,
     pub persons_replanned: usize,
+    pub plan_delta: isize,
+    pub strategy_stats: Vec<StrategyStat>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StrategyStat {
+    pub strategy_name: String,
+    pub sampled: usize,
+    pub applied: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -529,10 +538,39 @@ fn apply_replanning_hook(
         return ReplanningSummary {
             strategies_considered: scenario.config.replanning.strategies.len(),
             persons_replanned: 0,
+            plan_delta: 0,
+            strategy_stats: scenario
+                .config
+                .replanning
+                .strategies
+                .iter()
+                .map(|strategy| StrategyStat {
+                    strategy_name: strategy.name.clone(),
+                    sampled: 0,
+                    applied: 0,
+                })
+                .collect(),
         };
     }
 
+    let initial_plan_count = scenario
+        .population
+        .persons
+        .iter()
+        .map(|person| person.plans.len())
+        .sum::<usize>();
     let mut persons_replanned = 0usize;
+    let mut strategy_stats = scenario
+        .config
+        .replanning
+        .strategies
+        .iter()
+        .map(|strategy| StrategyStat {
+            strategy_name: strategy.name.clone(),
+            sampled: 0,
+            applied: 0,
+        })
+        .collect::<Vec<_>>();
     for person in &mut scenario.population.persons {
         let Some(strategy_name) = select_strategy(
             &scenario.config.replanning.strategies,
@@ -543,6 +581,12 @@ fn apply_replanning_hook(
         ) else {
             continue;
         };
+        if let Some(stat) = strategy_stats
+            .iter_mut()
+            .find(|stat| stat.strategy_name == strategy_name)
+        {
+            stat.sampled += 1;
+        }
 
         let replanned = match strategy_name {
             "BestScore" => apply_best_score_strategy(person),
@@ -551,13 +595,27 @@ fn apply_replanning_hook(
         };
         if replanned {
             persons_replanned += 1;
+            if let Some(stat) = strategy_stats
+                .iter_mut()
+                .find(|stat| stat.strategy_name == strategy_name)
+            {
+                stat.applied += 1;
+            }
         }
         prune_plans(person, scenario.config.replanning.max_agent_plan_memory_size);
     }
+    let final_plan_count = scenario
+        .population
+        .persons
+        .iter()
+        .map(|person| person.plans.len())
+        .sum::<usize>();
 
     ReplanningSummary {
         strategies_considered: scenario.config.replanning.strategies.len(),
         persons_replanned,
+        plan_delta: final_plan_count as isize - initial_plan_count as isize,
+        strategy_stats,
     }
 }
 
@@ -735,6 +793,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_events(&output_dir.join("events.csv"), output)?;
     write_eventstats(&output_dir.join("eventstats.csv"), output)?;
     write_link_eventstats(&output_dir.join("link_eventstats.csv"), output)?;
+    write_replanningstats(&output_dir.join("replanningstats.csv"), output)?;
     Ok(())
 }
 
@@ -1161,6 +1220,32 @@ fn write_link_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreErro
             analysis.iteration, analysis.link_id, analysis.avg_travel_time_seconds, analysis.traversals
         )
         .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn write_replanningstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;strategies_considered;persons_replanned;plan_delta;strategy_name;sampled;applied"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for stat in &iteration.replanning_summary.strategy_stats {
+            writeln!(
+                writer,
+                "{};{};{};{};{};{};{}",
+                iteration.iteration,
+                iteration.replanning_summary.strategies_considered,
+                iteration.replanning_summary.persons_replanned,
+                iteration.replanning_summary.plan_delta,
+                stat.strategy_name,
+                stat.sampled,
+                stat.applied
+            )
+            .map_err(|source| write_error(path, source))?;
+        }
     }
     Ok(())
 }
