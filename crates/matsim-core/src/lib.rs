@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -306,6 +306,8 @@ pub struct LinkTraversalStat {
     pub free_speed_exit_time_seconds: f64,
     pub queue_exit_time_seconds: f64,
     pub headway_seconds: f64,
+    pub buffer_size_before_release: usize,
+    pub buffer_size_after_release: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1822,14 +1824,14 @@ fn write_link_traversals(path: &Path, output: &RunOutput) -> Result<(), CoreErro
     let mut writer = csv_writer(path)?;
     writeln!(
         writer,
-        "iteration;person_id;leg_index;link_id;enter_time_seconds;same_enter_rank;same_enter_group_size;free_speed_exit_time_seconds;queue_exit_time_seconds;queue_delay_seconds;headway_seconds"
+        "iteration;person_id;leg_index;link_id;enter_time_seconds;same_enter_rank;same_enter_group_size;free_speed_exit_time_seconds;queue_exit_time_seconds;queue_delay_seconds;headway_seconds;buffer_size_before_release;buffer_size_after_release"
     )
     .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for traversal in &iteration.link_traversals {
             writeln!(
                 writer,
-                "{};{};{};{};{:.6};{};{};{:.6};{:.6};{:.6};{:.6}",
+                "{};{};{};{};{:.6};{};{};{:.6};{:.6};{:.6};{:.6};{};{}",
                 iteration.iteration,
                 traversal.person_id,
                 traversal.leg_index,
@@ -1841,7 +1843,9 @@ fn write_link_traversals(path: &Path, output: &RunOutput) -> Result<(), CoreErro
                 traversal.queue_exit_time_seconds,
                 (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
                     .max(0.0),
-                traversal.headway_seconds
+                traversal.headway_seconds,
+                traversal.buffer_size_before_release,
+                traversal.buffer_size_after_release
             )
             .map_err(|source| write_error(path, source))?;
         }
@@ -2394,7 +2398,8 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 };
             let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
             let free_speed_exit_s = queue_link_state.ready_to_leave_link(current_time_s, link);
-            let exit_time_s = queue_link_state.cross_node(free_speed_exit_s, headway_s);
+            let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
+                queue_link_state.cross_node(free_speed_exit_s, headway_s);
             observation_state.record_link_traversal(
                 &person.id,
                 leg_order,
@@ -2403,6 +2408,8 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 free_speed_exit_s,
                 exit_time_s,
                 headway_s,
+                buffer_size_before_release,
+                buffer_size_after_release,
             );
             events.push(EventRecord {
                 time_seconds: exit_time_s,
@@ -2589,6 +2596,7 @@ struct QueueLinkState {
 #[derive(Debug, Default)]
 struct NodeFlowState {
     next_release_time_s: f64,
+    pending_releases: VecDeque<f64>,
 }
 
 impl QueueLinkState {
@@ -2596,7 +2604,7 @@ impl QueueLinkState {
         enter_time_s + link.length_m / link.freespeed_mps
     }
 
-    fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
+    fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> (f64, usize, usize) {
         self.node_flow_state.enter_buffer(ready_to_leave_link_s);
         self.node_flow_state.release_from_buffer(headway_s)
     }
@@ -2604,13 +2612,33 @@ impl QueueLinkState {
 
 impl NodeFlowState {
     fn enter_buffer(&mut self, ready_to_leave_link_s: f64) {
+        self.discard_released(ready_to_leave_link_s);
         self.next_release_time_s = self.next_release_time_s.max(ready_to_leave_link_s);
     }
 
-    fn release_from_buffer(&mut self, headway_s: f64) -> f64 {
+    fn release_from_buffer(&mut self, headway_s: f64) -> (f64, usize, usize) {
         let exit_time_s = self.next_release_time_s;
         self.next_release_time_s = exit_time_s + headway_s;
-        exit_time_s
+        self.pending_releases.push_back(exit_time_s);
+        let buffer_size_before_release = self.pending_releases.len();
+        self.discard_released(exit_time_s);
+        let buffer_size_after_release = self.pending_releases.len();
+        (
+            exit_time_s,
+            buffer_size_before_release,
+            buffer_size_after_release,
+        )
+    }
+
+    fn discard_released(&mut self, time_s: f64) {
+        while self
+            .pending_releases
+            .front()
+            .copied()
+            .is_some_and(|scheduled_release| scheduled_release <= time_s)
+        {
+            self.pending_releases.pop_front();
+        }
     }
 }
 
@@ -2634,6 +2662,8 @@ impl TrafficObservationState {
         free_speed_exit_s: f64,
         exit_time_s: f64,
         headway_s: f64,
+        buffer_size_before_release: usize,
+        buffer_size_after_release: usize,
     ) {
         let observed_travel_time_s = (exit_time_s - enter_time_s).max(0.0);
         let same_enter_key = (link_id.to_string(), to_millis(enter_time_s));
@@ -2654,6 +2684,8 @@ impl TrafficObservationState {
             free_speed_exit_time_seconds: free_speed_exit_s,
             queue_exit_time_seconds: exit_time_s,
             headway_seconds: headway_s,
+            buffer_size_before_release,
+            buffer_size_after_release,
         });
         *self
             .observed_link_sums
