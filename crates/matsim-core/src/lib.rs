@@ -99,7 +99,14 @@ pub struct Population {
 #[derive(Debug, Clone)]
 pub struct Person {
     pub id: String,
-    pub selected_plan: Plan,
+    pub plans: Vec<Plan>,
+    pub selected_plan_index: usize,
+}
+
+impl Person {
+    pub fn selected_plan(&self) -> &Plan {
+        &self.plans[self.selected_plan_index]
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -262,14 +269,14 @@ fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u3
         let mut person_distance_m = 0.0_f64;
         let mut last_activity: Option<&Activity> = None;
 
-        for element in &person.selected_plan.elements {
+        for element in &person.selected_plan().elements {
             match element {
                 PlanElement::Activity(activity) => last_activity = Some(activity),
                 PlanElement::Leg(leg) => {
                     total_legs += 1;
                     *mode_counts.entry(leg.mode.clone()).or_default() += 1;
 
-                    let distance_m = leg_distance_m(leg, last_activity, next_activity(&person.selected_plan, leg), &scenario.network);
+                    let distance_m = leg_distance_m(leg, last_activity, next_activity(&person.selected_plan(), leg), &scenario.network);
                     total_leg_distance_m += distance_m;
                     person_distance_m += distance_m;
                 }
@@ -289,7 +296,7 @@ fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u3
         .zip(simulated_leg_times.iter())
         .map(|(person, leg_times)| {
             score_plan(
-                &person.selected_plan,
+                &person.selected_plan(),
                 &scenario.config.scoring,
                 &scenario.network,
                 leg_times,
@@ -514,7 +521,7 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
         .iter()
         .map(|person| {
             let leg_count = person
-                .selected_plan
+                .selected_plan()
                 .elements
                 .iter()
                 .filter(|element| matches!(element, PlanElement::Leg(_)))
@@ -525,7 +532,7 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
 
     let mut pending = BinaryHeap::new();
     for (person_index, person) in population.persons.iter().enumerate() {
-        if let Some((leg_index, departure_time_s)) = first_leg_departure(&person.selected_plan) {
+        if let Some((leg_index, departure_time_s)) = first_leg_departure(&person.selected_plan()) {
             pending.push(PendingLeg {
                 departure_time_ms: to_millis(departure_time_s),
                 departure_time_s,
@@ -540,11 +547,11 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
 
     while let Some(pending_leg) = pending.pop() {
         let person = &population.persons[pending_leg.person_index];
-        let Some(PlanElement::Leg(leg)) = person.selected_plan.elements.get(pending_leg.plan_element_index) else {
+        let Some(PlanElement::Leg(leg)) = person.selected_plan().elements.get(pending_leg.plan_element_index) else {
             continue;
         };
-        let previous_activity = previous_activity_at(&person.selected_plan, pending_leg.plan_element_index);
-        let next_activity = next_activity_at(&person.selected_plan, pending_leg.plan_element_index);
+        let previous_activity = previous_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
+        let next_activity = next_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
         let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
 
         let mut current_time_s = pending_leg.departure_time_s;
@@ -565,13 +572,13 @@ fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<
         }
 
         let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
-        let leg_order = leg_order_for_element(&person.selected_plan, pending_leg.plan_element_index);
+        let leg_order = leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
         if let Some(slot) = travel_times[pending_leg.person_index].get_mut(leg_order) {
             *slot = travel_time_s;
         }
 
         if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
-            &person.selected_plan,
+            &person.selected_plan(),
             pending_leg.plan_element_index,
             pending_leg.departure_time_s + travel_time_s,
         ) {
@@ -657,7 +664,7 @@ fn score_plan_breakdown(
     network: &Network,
     leg_travel_times: &[f64],
 ) -> PersonScoreBreakdown {
-    let breakdown = score_plan_internal(&person.selected_plan, scoring, network, leg_travel_times);
+    let breakdown = score_plan_internal(&person.selected_plan(), scoring, network, leg_travel_times);
     PersonScoreBreakdown {
         person_id: person.id.clone(),
         total_score: breakdown.total_score,

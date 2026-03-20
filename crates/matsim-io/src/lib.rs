@@ -289,8 +289,8 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
     let mut current_person_id: Option<String> = None;
     let mut current_plan: Option<Plan> = None;
     let mut current_plan_selected = false;
-    let mut fallback_plan: Option<Plan> = None;
-    let mut selected_plan: Option<Plan> = None;
+    let mut current_person_plans: Vec<Plan> = Vec::new();
+    let mut selected_plan_index: Option<usize> = None;
     let mut inside_route = false;
     let mut route_buffer = String::new();
 
@@ -301,15 +301,19 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
         })? {
             Event::Start(ref e) if e.name().as_ref() == b"person" => {
                 current_person_id = attr_string(path, e, b"id")?;
-                selected_plan = None;
-                fallback_plan = None;
+                current_person_plans.clear();
+                selected_plan_index = None;
             }
             Event::End(ref e) if e.name().as_ref() == b"person" => {
                 if let Some(person_id) = current_person_id.take() {
-                    let plan = selected_plan.take().or_else(|| fallback_plan.take()).unwrap_or_default();
                     population.persons.push(Person {
                         id: person_id,
-                        selected_plan: plan,
+                        plans: if current_person_plans.is_empty() {
+                            vec![Plan::default()]
+                        } else {
+                            std::mem::take(&mut current_person_plans)
+                        },
+                        selected_plan_index: selected_plan_index.unwrap_or(0),
                     });
                 }
             }
@@ -321,11 +325,11 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
             }
             Event::End(ref e) if e.name().as_ref() == b"plan" => {
                 if let Some(plan) = current_plan.take() {
+                    let next_index = current_person_plans.len();
                     if current_plan_selected {
-                        selected_plan = Some(plan);
-                    } else if fallback_plan.is_none() {
-                        fallback_plan = Some(plan);
+                        selected_plan_index = Some(next_index);
                     }
+                    current_person_plans.push(plan);
                 }
                 current_plan_selected = false;
             }
@@ -519,8 +523,10 @@ mod tests {
             .join("matsim-libs/examples/scenarios/equil/plans100.xml");
         let population = load_population(&root).unwrap();
         let first_person = &population.persons[0];
+        assert_eq!(first_person.selected_plan_index, 0);
+        assert_eq!(first_person.plans.len(), 1);
         let first_leg = first_person
-            .selected_plan
+            .selected_plan()
             .elements
             .iter()
             .find_map(|element| match element {
