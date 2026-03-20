@@ -77,6 +77,8 @@ enum Command {
         csv: bool,
         #[arg(long)]
         markdown: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -158,7 +160,8 @@ fn run() -> Result<(), CliError> {
             min_reroute_gain,
             csv,
             markdown,
-        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown),
+            output,
+        } => inspect_population_command(&config, iteration, sort_by, limit, min_reroute_gain, csv, markdown, output),
     }
 }
 
@@ -373,6 +376,7 @@ fn inspect_population_command(
     min_reroute_gain: f64,
     csv: bool,
     markdown: bool,
+    output: Option<PathBuf>,
 ) -> Result<(), CliError> {
     let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
     let mut rows = Vec::new();
@@ -421,65 +425,85 @@ fn inspect_population_command(
         rows.truncate(limit);
     }
 
+    let mut text = String::new();
     if csv {
-        println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+        text.push_str("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n");
         for row in rows {
-            println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
+            text.push_str(&format!(
+                "{};{};{};{:.6};{:.6};{}\n",
+                row.0, row.1, row.2, row.3, row.4, row.5
+            ));
         }
-        return Ok(());
+        return emit_text(&text, output);
     }
 
     if markdown {
-        println!("# Population Inspection");
+        text.push_str("# Population Inspection\n");
         if let Some(iteration) = iteration {
-            println!();
-            println!("- iteration: {iteration}");
+            text.push_str(&format!("\n- iteration: {iteration}\n"));
         }
-        println!("- persons: {}", scenario.population.persons.len());
-        println!(
-            "- sort_by: {}",
+        text.push_str(&format!("- persons: {}\n", scenario.population.persons.len()));
+        text.push_str(&format!(
+            "- sort_by: {}\n",
             match sort_by {
                 PopulationSortKey::Id => "id",
                 PopulationSortKey::Score => "score",
                 PopulationSortKey::RerouteGain => "reroute-gain",
                 PopulationSortKey::Plans => "plans",
             }
-        );
-        println!("- min_reroute_gain: {:.6}", min_reroute_gain);
+        ));
+        text.push_str(&format!("- min_reroute_gain: {:.6}\n", min_reroute_gain));
         if let Some(limit) = limit {
-            println!("- limit: {limit}");
+            text.push_str(&format!("- limit: {limit}\n"));
         }
-        println!();
-        println!("| person_id | selected_plan_index | plans | selected_score | reroute_gain | current_links |");
-        println!("| --- | ---: | ---: | ---: | ---: | --- |");
+        text.push_str(
+            "\n| person_id | selected_plan_index | plans | selected_score | reroute_gain | current_links |\n",
+        );
+        text.push_str("| --- | ---: | ---: | ---: | ---: | --- |\n");
         for row in rows {
-            println!(
+            text.push_str(&format!(
                 "| {} | {} | {} | {:.6} | {:.6} | {} |",
                 row.0, row.1, row.2, row.3, row.4, row.5
-            );
+            ));
+            text.push('\n');
         }
-        return Ok(());
+        return emit_text(&text, output);
     }
 
     if let Some(iteration) = iteration {
-        println!("iteration={iteration}");
+        text.push_str(&format!("iteration={iteration}\n"));
     }
-    println!("persons={}", scenario.population.persons.len());
-    println!("sort_by={}", match sort_by {
+    text.push_str(&format!("persons={}\n", scenario.population.persons.len()));
+    text.push_str(&format!("sort_by={}\n", match sort_by {
         PopulationSortKey::Id => "id",
         PopulationSortKey::Score => "score",
         PopulationSortKey::RerouteGain => "reroute-gain",
         PopulationSortKey::Plans => "plans",
-    });
+    }));
     if let Some(limit) = limit {
-        println!("limit={limit}");
+        text.push_str(&format!("limit={limit}\n"));
     }
-    println!("min_reroute_gain={min_reroute_gain:.6}");
-    println!("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links");
+    text.push_str(&format!("min_reroute_gain={min_reroute_gain:.6}\n"));
+    text.push_str("person_id;selected_plan_index;plans;selected_score;reroute_gain;current_links\n");
     for row in rows {
-        println!("{};{};{};{:.6};{:.6};{}", row.0, row.1, row.2, row.3, row.4, row.5);
+        text.push_str(&format!(
+            "{};{};{};{:.6};{:.6};{}\n",
+            row.0, row.1, row.2, row.3, row.4, row.5
+        ));
     }
 
+    emit_text(&text, output)
+}
+
+fn emit_text(text: &str, output: Option<PathBuf>) -> Result<(), CliError> {
+    if let Some(path) = output {
+        fs::write(&path, text).map_err(|source| CliError::ReadFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+    } else {
+        print!("{text}");
+    }
     Ok(())
 }
 
