@@ -3530,13 +3530,13 @@ fn simulate_link_traversal(
         queue_node_state.note_ready_vehicle(link_id);
         queue_node_state.prepare_crossing(link_id, &ready_to_leave)
     };
-    let _ = queue_state.dequeue_pending_offer();
+    let pending_offer = queue_state.dequeue_pending_offer_for_decision(&decision, &link.to_node_id);
     let crossing = {
         let queue_link_state = queue_state
             .link_states
             .entry(link_id.to_string())
             .or_default();
-        queue_link_state.cross_node(&ready_to_leave, &decision)
+        queue_link_state.cross_node(&ready_to_leave, pending_offer.as_ref(), &decision)
     };
     {
         let queue_node_state = queue_state
@@ -3742,8 +3742,15 @@ impl QueueLinkState {
     fn cross_node(
         &mut self,
         ready_to_leave: &LinkReadyToLeave,
+        pending_offer: Option<&PendingNodeOffer>,
         decision: &NodeCrossingDecision,
     ) -> NodeCrossingResult {
+        let ready_time_s = pending_offer
+            .map(|offer| offer.ready_time_s)
+            .unwrap_or(ready_to_leave.free_speed_exit_s);
+        let headway_s = pending_offer
+            .map(|offer| offer.headway_s)
+            .unwrap_or(ready_to_leave.headway_s);
         let effective_ready_time_s = if decision.selected_inbound_link_id.as_deref().is_some_and(
             |selected_inbound_link_id| {
                 selected_inbound_link_id != decision.traversing_inbound_link_id
@@ -3751,12 +3758,11 @@ impl QueueLinkState {
         ) {
             (decision.sim_step + 1) as f64
         } else {
-            ready_to_leave.free_speed_exit_s
+            ready_time_s
         };
         self.node_flow_state.enter_buffer(effective_ready_time_s);
-        let (exit_time_s, buffer_size_before_release, buffer_size_after_release) = self
-            .node_flow_state
-            .release_from_buffer(ready_to_leave.headway_s);
+        let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
+            self.node_flow_state.release_from_buffer(headway_s);
         NodeCrossingResult {
             exit_time_s,
             buffer_size_before_release,
@@ -3770,16 +3776,18 @@ impl QueueSimulationState {
         self.pending_node_offers.push_back(offer);
     }
 
-    fn dequeue_pending_offer(&mut self) -> Option<PendingNodeOffer> {
-        self.pending_node_offers
-            .pop_front()
-            .map(|offer| PendingNodeOffer {
-                ready_time_s: offer.ready_time_s,
-                sim_step: offer.sim_step,
-                inbound_link_id: offer.inbound_link_id,
-                to_node_id: offer.to_node_id,
-                headway_s: offer.headway_s,
-            })
+    fn dequeue_pending_offer_for_decision(
+        &mut self,
+        decision: &NodeCrossingDecision,
+        to_node_id: &str,
+    ) -> Option<PendingNodeOffer> {
+        let selected_inbound_link_id = decision.selected_inbound_link_id.as_deref()?;
+        let offer_index = self.pending_node_offers.iter().position(|offer| {
+            offer.to_node_id == to_node_id
+                && offer.sim_step == decision.sim_step
+                && offer.inbound_link_id == selected_inbound_link_id
+        })?;
+        self.pending_node_offers.remove(offer_index)
     }
 }
 
