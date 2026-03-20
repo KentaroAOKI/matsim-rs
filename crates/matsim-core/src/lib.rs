@@ -574,7 +574,7 @@ impl Ord for PendingLeg {
         other
             .departure_time_ms
             .cmp(&self.departure_time_ms)
-            .then_with(|| other.person_index.cmp(&self.person_index))
+            .then_with(|| self.person_index.cmp(&other.person_index))
             .then_with(|| other.plan_element_index.cmp(&self.plan_element_index))
     }
 }
