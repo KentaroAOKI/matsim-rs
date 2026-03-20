@@ -3393,6 +3393,15 @@ struct NodeCrossingDecision {
     selected_inbound_link_id: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct PendingNodeOffer {
+    ready_time_s: f64,
+    sim_step: i64,
+    inbound_link_id: String,
+    to_node_id: String,
+    headway_s: f64,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3498,20 +3507,44 @@ fn simulate_link_traversal(
     link: &Link,
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
-    let queue_link_state = queue_state
-        .link_states
-        .entry(link_id.to_string())
-        .or_default();
-    let queue_node_state = queue_state
-        .node_states
-        .entry(link.to_node_id.clone())
-        .or_default();
-    queue_node_state.register_inbound_link(link_id);
-    let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
-    queue_node_state.note_ready_vehicle(link_id);
-    let decision = queue_node_state.prepare_crossing(link_id, &ready_to_leave);
-    let crossing = queue_link_state.cross_node(&ready_to_leave, &decision);
-    queue_node_state.finish_crossing(decision);
+    let ready_to_leave = {
+        let queue_link_state = queue_state
+            .link_states
+            .entry(link_id.to_string())
+            .or_default();
+        queue_link_state.ready_to_leave_link(enter_time_s, link)
+    };
+    queue_state.enqueue_pending_offer(PendingNodeOffer {
+        ready_time_s: ready_to_leave.free_speed_exit_s,
+        sim_step: ready_to_leave.free_speed_exit_s.floor() as i64,
+        inbound_link_id: link_id.to_string(),
+        to_node_id: link.to_node_id.clone(),
+        headway_s: ready_to_leave.headway_s,
+    });
+    let decision = {
+        let queue_node_state = queue_state
+            .node_states
+            .entry(link.to_node_id.clone())
+            .or_default();
+        queue_node_state.register_inbound_link(link_id);
+        queue_node_state.note_ready_vehicle(link_id);
+        queue_node_state.prepare_crossing(link_id, &ready_to_leave)
+    };
+    let _ = queue_state.dequeue_pending_offer();
+    let crossing = {
+        let queue_link_state = queue_state
+            .link_states
+            .entry(link_id.to_string())
+            .or_default();
+        queue_link_state.cross_node(&ready_to_leave, &decision)
+    };
+    {
+        let queue_node_state = queue_state
+            .node_states
+            .entry(link.to_node_id.clone())
+            .or_default();
+        queue_node_state.finish_crossing(decision);
+    }
     SimulatedLinkTraversal {
         exit_time_s: crossing.exit_time_s,
         free_speed_exit_s: ready_to_leave.free_speed_exit_s,
@@ -3649,6 +3682,7 @@ struct QueueLinkState {
 struct QueueSimulationState {
     link_states: BTreeMap<String, QueueLinkState>,
     node_states: BTreeMap<String, QueueNodeState>,
+    pending_node_offers: VecDeque<PendingNodeOffer>,
 }
 
 #[derive(Debug, Default)]
@@ -3728,6 +3762,24 @@ impl QueueLinkState {
             buffer_size_before_release,
             buffer_size_after_release,
         }
+    }
+}
+
+impl QueueSimulationState {
+    fn enqueue_pending_offer(&mut self, offer: PendingNodeOffer) {
+        self.pending_node_offers.push_back(offer);
+    }
+
+    fn dequeue_pending_offer(&mut self) -> Option<PendingNodeOffer> {
+        self.pending_node_offers
+            .pop_front()
+            .map(|offer| PendingNodeOffer {
+                ready_time_s: offer.ready_time_s,
+                sim_step: offer.sim_step,
+                inbound_link_id: offer.inbound_link_id,
+                to_node_id: offer.to_node_id,
+                headway_s: offer.headway_s,
+            })
     }
 }
 
