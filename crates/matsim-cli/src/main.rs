@@ -40,6 +40,8 @@ enum Command {
         config: PathBuf,
         #[arg(long)]
         person_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
     },
     ExplainPlans {
         #[arg(long)]
@@ -80,7 +82,11 @@ fn run() -> Result<(), CliError> {
         Command::Run { config } => run_command(&config),
         Command::Compare { left, right } => compare_command(&left, &right),
         Command::Explain { config, person_id } => explain_command(&config, &person_id),
-        Command::ExplainReroute { config, person_id } => explain_reroute_command(&config, &person_id),
+        Command::ExplainReroute {
+            config,
+            person_id,
+            iteration,
+        } => explain_reroute_command(&config, &person_id, iteration),
         Command::ExplainPlans {
             config,
             person_id,
@@ -189,12 +195,23 @@ fn explain_command(config_path: &Path, person_id: &str) -> Result<(), CliError> 
     Ok(())
 }
 
-fn explain_reroute_command(config_path: &Path, person_id: &str) -> Result<(), CliError> {
+fn explain_reroute_command(config_path: &Path, person_id: &str, iteration: Option<u32>) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
+    let scenario = if let Some(iteration) = iteration {
+        let mut scenario_for_run = scenario.clone();
+        scenario_for_run.config.last_iteration = iteration.min(scenario_for_run.config.last_iteration);
+        let (_, final_state) = run_iterations_with_state(&scenario_for_run);
+        final_state
+    } else {
+        scenario
+    };
     let explanation =
         explain_person_reroute(&scenario, person_id).ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
 
     println!("person_id={}", explanation.person_id);
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
     for leg in explanation.legs {
         println!(
             "leg={} mode={} current_cost={:.6} rerouted_cost={:.6}",

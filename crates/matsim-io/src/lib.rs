@@ -615,6 +615,23 @@ mod tests {
     }
 
     #[test]
+    fn explains_reroute_fixture_after_iteration_uses_updated_route() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/reroute/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let (_, final_state) = run_iterations_with_state(&scenario);
+        let explanation = explain_person_reroute(&final_state, "1").unwrap();
+        assert_eq!(explanation.legs[0].current_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert_eq!(explanation.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert_eq!(
+            explanation.legs[0].current_cost_seconds,
+            explanation.legs[0].rerouted_cost_seconds
+        );
+    }
+
+    #[test]
     fn mixed_fixture_uses_best_score_and_reroute_together() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
