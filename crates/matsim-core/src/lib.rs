@@ -2322,12 +2322,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             vec![0.0; leg_count]
         })
         .collect::<Vec<_>>();
-    let mut observed_link_sums = BTreeMap::<String, f64>::new();
-    let mut observed_link_counts = BTreeMap::<String, usize>::new();
-    let mut observed_link_profile_sums = BTreeMap::<String, BTreeMap<u32, f64>>::new();
-    let mut observed_link_profile_counts = BTreeMap::<String, BTreeMap<u32, usize>>::new();
-    let mut same_enter_counts = BTreeMap::<(String, i64), usize>::new();
-    let mut link_traversals = Vec::<LinkTraversalStat>::new();
+    let mut observation_state = TrafficObservationState::default();
     let mut events = Vec::<EventRecord>::new();
 
     let mut pending = BinaryHeap::new();
@@ -2343,7 +2338,7 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         }
     }
 
-    let mut next_link_exit_time_s = BTreeMap::<String, f64>::new();
+    let mut queue_link_states = BTreeMap::<String, QueueLinkState>::new();
 
     while let Some(pending_leg) = pending.pop() {
         let person = &population.persons[pending_leg.person_index];
@@ -2392,43 +2387,25 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 leg_index: leg_order,
             });
             let free_speed_exit_s = current_time_s + link.length_m / link.freespeed_mps;
-            let queue_exit_s = next_link_exit_time_s.get(link_id).copied().unwrap_or(0.0);
-            let exit_time_s = free_speed_exit_s.max(queue_exit_s);
             let headway_s =
                 if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
                     3600.0 / link.capacity_veh_per_hour
                 } else {
                     0.0
                 };
-            let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
-            let same_enter_key = (link_id.to_string(), to_millis(current_time_s));
-            let same_enter_rank = same_enter_counts.get(&same_enter_key).copied().unwrap_or(0);
-            same_enter_counts.insert(same_enter_key, same_enter_rank + 1);
-            link_traversals.push(LinkTraversalStat {
-                person_id: person.id.clone(),
-                leg_index: leg_order,
-                link_id: link_id.to_string(),
-                enter_time_seconds: current_time_s,
-                same_enter_rank,
-                same_enter_group_size: 0,
-                free_speed_exit_time_seconds: free_speed_exit_s,
-                queue_exit_time_seconds: exit_time_s,
-                headway_seconds: headway_s,
-            });
-            *observed_link_sums.entry(link_id.to_string()).or_default() += observed_travel_time_s;
-            *observed_link_counts.entry(link_id.to_string()).or_default() += 1;
-            let bucket = (current_time_s / 3600.0).floor().max(0.0) as u32;
-            *observed_link_profile_sums
+            let exit_time_s = queue_link_states
                 .entry(link_id.to_string())
                 .or_default()
-                .entry(bucket)
-                .or_default() += observed_travel_time_s;
-            *observed_link_profile_counts
-                .entry(link_id.to_string())
-                .or_default()
-                .entry(bucket)
-                .or_default() += 1;
-            next_link_exit_time_s.insert(link_id.to_string(), exit_time_s + headway_s);
+                .schedule_exit(free_speed_exit_s, headway_s);
+            observation_state.record_link_traversal(
+                &person.id,
+                leg_order,
+                link_id,
+                current_time_s,
+                free_speed_exit_s,
+                exit_time_s,
+                headway_s,
+            );
             events.push(EventRecord {
                 time_seconds: exit_time_s,
                 person_id: person.id.clone(),
@@ -2475,42 +2452,8 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         }
     }
 
-    let observed_link_costs = network
-        .links
-        .iter()
-        .map(|(link_id, link)| {
-            let observed_cost_s = observed_link_sums
-                .get(link_id)
-                .zip(observed_link_counts.get(link_id))
-                .map(|(sum, count)| *sum / (*count as f64))
-                .unwrap_or_else(|| link.length_m / link.freespeed_mps);
-            (link_id.clone(), observed_cost_s)
-        })
-        .collect();
-    for traversal in &mut link_traversals {
-        let key = (
-            traversal.link_id.clone(),
-            to_millis(traversal.enter_time_seconds),
-        );
-        traversal.same_enter_group_size = same_enter_counts.get(&key).copied().unwrap_or(1);
-    }
-    let observed_link_time_profiles = observed_link_profile_sums
-        .into_iter()
-        .map(|(link_id, bucket_sums)| {
-            let profile = bucket_sums
-                .into_iter()
-                .map(|(bucket, sum)| {
-                    let count = observed_link_profile_counts
-                        .get(&link_id)
-                        .and_then(|counts| counts.get(&bucket))
-                        .copied()
-                        .unwrap_or(1);
-                    (bucket, sum / count as f64)
-                })
-                .collect::<BTreeMap<_, _>>();
-            (link_id, profile)
-        })
-        .collect();
+    let (observed_link_costs, observed_link_time_profiles, link_traversals) =
+        observation_state.finish(network);
 
     SimulationSnapshot {
         leg_times: travel_times,
@@ -2638,6 +2581,142 @@ struct PendingLeg {
     person_index: usize,
     person_id: String,
     plan_element_index: usize,
+}
+
+#[derive(Debug, Default)]
+struct QueueLinkState {
+    next_exit_time_s: f64,
+}
+
+impl QueueLinkState {
+    fn schedule_exit(&mut self, free_speed_exit_s: f64, headway_s: f64) -> f64 {
+        let exit_time_s = free_speed_exit_s.max(self.next_exit_time_s);
+        self.next_exit_time_s = exit_time_s + headway_s;
+        exit_time_s
+    }
+}
+
+#[derive(Debug, Default)]
+struct TrafficObservationState {
+    observed_link_sums: BTreeMap<String, f64>,
+    observed_link_counts: BTreeMap<String, usize>,
+    observed_link_profile_sums: BTreeMap<String, BTreeMap<u32, f64>>,
+    observed_link_profile_counts: BTreeMap<String, BTreeMap<u32, usize>>,
+    same_enter_counts: BTreeMap<(String, i64), usize>,
+    link_traversals: Vec<LinkTraversalStat>,
+}
+
+impl TrafficObservationState {
+    fn record_link_traversal(
+        &mut self,
+        person_id: &str,
+        leg_index: usize,
+        link_id: &str,
+        enter_time_s: f64,
+        free_speed_exit_s: f64,
+        exit_time_s: f64,
+        headway_s: f64,
+    ) {
+        let observed_travel_time_s = (exit_time_s - enter_time_s).max(0.0);
+        let same_enter_key = (link_id.to_string(), to_millis(enter_time_s));
+        let same_enter_rank = self
+            .same_enter_counts
+            .get(&same_enter_key)
+            .copied()
+            .unwrap_or(0);
+        self.same_enter_counts
+            .insert(same_enter_key, same_enter_rank + 1);
+        self.link_traversals.push(LinkTraversalStat {
+            person_id: person_id.to_string(),
+            leg_index,
+            link_id: link_id.to_string(),
+            enter_time_seconds: enter_time_s,
+            same_enter_rank,
+            same_enter_group_size: 0,
+            free_speed_exit_time_seconds: free_speed_exit_s,
+            queue_exit_time_seconds: exit_time_s,
+            headway_seconds: headway_s,
+        });
+        *self
+            .observed_link_sums
+            .entry(link_id.to_string())
+            .or_default() += observed_travel_time_s;
+        *self
+            .observed_link_counts
+            .entry(link_id.to_string())
+            .or_default() += 1;
+        let bucket = (enter_time_s / 3600.0).floor().max(0.0) as u32;
+        *self
+            .observed_link_profile_sums
+            .entry(link_id.to_string())
+            .or_default()
+            .entry(bucket)
+            .or_default() += observed_travel_time_s;
+        *self
+            .observed_link_profile_counts
+            .entry(link_id.to_string())
+            .or_default()
+            .entry(bucket)
+            .or_default() += 1;
+    }
+
+    fn finish(
+        mut self,
+        network: &Network,
+    ) -> (
+        BTreeMap<String, f64>,
+        BTreeMap<String, BTreeMap<u32, f64>>,
+        Vec<LinkTraversalStat>,
+    ) {
+        let observed_link_costs = network
+            .links
+            .iter()
+            .map(|(link_id, link)| {
+                let observed_cost_s = self
+                    .observed_link_sums
+                    .get(link_id)
+                    .zip(self.observed_link_counts.get(link_id))
+                    .map(|(sum, count)| *sum / (*count as f64))
+                    .unwrap_or_else(|| link.length_m / link.freespeed_mps);
+                (link_id.clone(), observed_cost_s)
+            })
+            .collect();
+
+        for traversal in &mut self.link_traversals {
+            let key = (
+                traversal.link_id.clone(),
+                to_millis(traversal.enter_time_seconds),
+            );
+            traversal.same_enter_group_size =
+                self.same_enter_counts.get(&key).copied().unwrap_or(1);
+        }
+
+        let observed_link_time_profiles = self
+            .observed_link_profile_sums
+            .into_iter()
+            .map(|(link_id, bucket_sums)| {
+                let profile = bucket_sums
+                    .into_iter()
+                    .map(|(bucket, sum)| {
+                        let count = self
+                            .observed_link_profile_counts
+                            .get(&link_id)
+                            .and_then(|counts| counts.get(&bucket))
+                            .copied()
+                            .unwrap_or(1);
+                        (bucket, sum / count as f64)
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                (link_id, profile)
+            })
+            .collect();
+
+        (
+            observed_link_costs,
+            observed_link_time_profiles,
+            self.link_traversals,
+        )
+    }
 }
 
 impl Eq for PendingLeg {}
