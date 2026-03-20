@@ -2583,7 +2583,12 @@ struct PendingLeg {
 
 #[derive(Debug, Default)]
 struct QueueLinkState {
-    next_node_release_time_s: f64,
+    node_flow_state: NodeFlowState,
+}
+
+#[derive(Debug, Default)]
+struct NodeFlowState {
+    next_release_time_s: f64,
 }
 
 impl QueueLinkState {
@@ -2592,8 +2597,15 @@ impl QueueLinkState {
     }
 
     fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
-        let exit_time_s = ready_to_leave_link_s.max(self.next_node_release_time_s);
-        self.next_node_release_time_s = exit_time_s + headway_s;
+        self.node_flow_state
+            .schedule_release(ready_to_leave_link_s, headway_s)
+    }
+}
+
+impl NodeFlowState {
+    fn schedule_release(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
+        let exit_time_s = ready_to_leave_link_s.max(self.next_release_time_s);
+        self.next_release_time_s = exit_time_s + headway_s;
         exit_time_s
     }
 }
