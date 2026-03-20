@@ -3827,16 +3827,24 @@ impl QueueSimulationState {
         })
     }
 
+    fn matching_node_step_batch(
+        &self,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> Option<NodeStepOfferBatch> {
+        self.first_pending_node_step_batch().filter(|batch| {
+            batch.to_node_id == to_node_id
+                && batch.sim_step == ready_to_leave.free_speed_exit_s.floor() as i64
+        })
+    }
+
     fn prepare_node_crossing(
         &mut self,
         inbound_link_id: &str,
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
     ) -> PreparedNodeCrossing {
-        let node_step_batch = self.first_pending_node_step_batch().filter(|batch| {
-            batch.to_node_id == to_node_id
-                && batch.sim_step == ready_to_leave.free_speed_exit_s.floor() as i64
-        });
+        let node_step_batch = self.matching_node_step_batch(to_node_id, ready_to_leave);
         let offer_snapshot = node_step_batch
             .clone()
             .map(|batch| batch.offer_snapshot)
