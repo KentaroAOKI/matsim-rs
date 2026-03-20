@@ -4,10 +4,9 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use matsim_core::{
-    explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, run_iterations_with_state,
-    write_outputs,
+    explain_person_plans, explain_person_reroute, explain_person_score, run_iterations_with_state, write_outputs,
 };
-use matsim_io::load_scenario;
+use matsim_io::{load_scenario, write_population};
 use thiserror::Error;
 
 #[derive(Debug, Parser)]
@@ -167,9 +166,10 @@ fn run() -> Result<(), CliError> {
 
 fn run_command(config_path: &Path) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
-    let output = run_iterations(&scenario);
+    let (output, final_state) = run_iterations_with_state(&scenario);
     let output_dir = resolve_output_dir(config_path, &scenario.config.output_directory);
     write_outputs(&output_dir, &output)?;
+    write_population(&output_dir.join("output_plans.xml"), &final_state.population)?;
 
     println!("random_seed={}", scenario.config.random_seed);
     println!("persons={}", scenario.population.persons.len());

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -36,6 +36,12 @@ pub enum IoError {
     },
     #[error("invalid float `{value}` in {path}")]
     InvalidFloat { path: String, value: String },
+    #[error("failed to write file {path}: {source}")]
+    WriteFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 pub fn load_scenario(config_path: &Path) -> Result<Scenario, IoError> {
@@ -387,6 +393,122 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
     Ok(population)
 }
 
+pub fn write_population(path: &Path, population: &Population) -> Result<(), IoError> {
+    let file = File::create(path).map_err(|source| IoError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut writer = BufWriter::new(file);
+
+    writeln!(writer, "<?xml version=\"1.0\" ?>").map_err(|source| IoError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    writeln!(writer, "<!DOCTYPE plans SYSTEM \"http://www.matsim.org/files/dtd/plans_v4.dtd\">").map_err(
+        |source| IoError::WriteFile {
+            path: path.display().to_string(),
+            source,
+        },
+    )?;
+    writeln!(writer, "<plans>").map_err(|source| IoError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+
+    for person in &population.persons {
+        writeln!(writer, "  <person id=\"{}\">", escape_xml(&person.id)).map_err(|source| IoError::WriteFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        for (index, plan) in person.plans.iter().enumerate() {
+            let selected = if index == person.selected_plan_index { " selected=\"yes\"" } else { "" };
+            let score = plan
+                .score
+                .map(|value| format!(" score=\"{value}\""))
+                .unwrap_or_default();
+            writeln!(writer, "    <plan{score}{selected}>").map_err(|source| IoError::WriteFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+            for element in &plan.elements {
+                match element {
+                    PlanElement::Activity(activity) => {
+                        write!(writer, "      <act type=\"{}\"", escape_xml(&activity.activity_type)).map_err(
+                            |source| IoError::WriteFile {
+                                path: path.display().to_string(),
+                                source,
+                            },
+                        )?;
+                        if let Some(link_id) = &activity.link_id {
+                            write!(writer, " link=\"{}\"", escape_xml(link_id)).map_err(|source| {
+                                IoError::WriteFile {
+                                    path: path.display().to_string(),
+                                    source,
+                                }
+                            })?;
+                        }
+                        if let Some(end_time_seconds) = activity.end_time_seconds {
+                            write!(writer, " end_time=\"{}\"", format_time(end_time_seconds)).map_err(
+                                |source| IoError::WriteFile {
+                                    path: path.display().to_string(),
+                                    source,
+                                },
+                            )?;
+                        }
+                        if let Some(duration_seconds) = activity.duration_seconds {
+                            write!(writer, " dur=\"{}\"", format_time(duration_seconds)).map_err(|source| {
+                                IoError::WriteFile {
+                                    path: path.display().to_string(),
+                                    source,
+                                }
+                            })?;
+                        }
+                        writeln!(writer, " />").map_err(|source| IoError::WriteFile {
+                            path: path.display().to_string(),
+                            source,
+                        })?;
+                    }
+                    PlanElement::Leg(leg) => {
+                        writeln!(writer, "      <leg mode=\"{}\">", escape_xml(&leg.mode)).map_err(|source| {
+                            IoError::WriteFile {
+                                path: path.display().to_string(),
+                                source,
+                            }
+                        })?;
+                        writeln!(
+                            writer,
+                            "        <route>{}</route>",
+                            escape_xml(&leg.route_node_ids.join(" "))
+                        )
+                        .map_err(|source| IoError::WriteFile {
+                            path: path.display().to_string(),
+                            source,
+                        })?;
+                        writeln!(writer, "      </leg>").map_err(|source| IoError::WriteFile {
+                            path: path.display().to_string(),
+                            source,
+                        })?;
+                    }
+                }
+            }
+            writeln!(writer, "    </plan>").map_err(|source| IoError::WriteFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        }
+        writeln!(writer, "  </person>").map_err(|source| IoError::WriteFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+    }
+
+    writeln!(writer, "</plans>").map_err(|source| IoError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
+}
+
 fn parse_activity(path: &Path, e: &BytesStart<'_>) -> Result<Activity, IoError> {
     Ok(Activity {
         activity_type: attr_string(path, e, b"type")?.unwrap_or_else(|| "unknown".to_string()),
@@ -400,6 +522,22 @@ fn parse_activity(path: &Path, e: &BytesStart<'_>) -> Result<Activity, IoError> 
             .map(parse_time)
             .transpose()?,
     })
+}
+
+fn format_time(value: f64) -> String {
+    let total_seconds = value.round() as i64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn resolve_input_path(base_dir: &Path, value: &str) -> PathBuf {
@@ -746,5 +884,23 @@ mod tests {
         assert!(explanation.plans[0].selected);
         assert_eq!(explanation.plans[1].score, Some(500.0));
         assert!(!explanation.plans[1].selected);
+    }
+
+    #[test]
+    fn writes_population_round_trip() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/two-plans/plans.xml");
+        let population = load_population(&root).unwrap();
+        let output = PathBuf::from("/tmp/matsim-rs-roundtrip-plans.xml");
+
+        write_population(&output, &population).unwrap();
+        let written = load_population(&output).unwrap();
+
+        assert_eq!(written.persons.len(), population.persons.len());
+        assert_eq!(written.persons[0].plans.len(), 2);
+        assert_eq!(written.persons[0].selected_plan_index, 0);
+        assert_eq!(written.persons[0].plans[0].score, Some(1.0));
+        assert_eq!(written.persons[0].plans[1].score, Some(500.0));
     }
 }
