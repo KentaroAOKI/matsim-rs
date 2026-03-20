@@ -3441,6 +3441,12 @@ struct NodeStepBatchPlan {
     selected_offer_count: usize,
 }
 
+struct PreparedBatchExecution {
+    batch_plan: NodeStepBatchPlan,
+    prepared_crossing: PreparedNodeCrossing,
+    ready_to_leave: LinkReadyToLeave,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3900,14 +3906,13 @@ impl QueueSimulationState {
         }
     }
 
-    fn drain_node_crossing(
+    fn drain_prepared_node_crossing(
         &mut self,
         inbound_link_id: &str,
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
+        prepared_crossing: PreparedNodeCrossing,
     ) -> DrainedNodeCrossing {
-        let prepared_crossing =
-            self.prepare_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
         let crossing = {
             let queue_link_state = self
                 .link_states
@@ -3932,11 +3937,15 @@ impl QueueSimulationState {
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
     ) -> ProcessedNodeStepBatch {
-        let batch_plan = self.plan_node_step_batch(inbound_link_id, to_node_id, ready_to_leave);
-        let _has_selected_inbound = batch_plan.selected_inbound_link_id.is_some();
-        let _selected_offer_count = batch_plan.selected_offer_count;
+        let prepared_execution =
+            self.prepare_batch_execution(inbound_link_id, to_node_id, ready_to_leave);
+        let _has_selected_inbound = prepared_execution
+            .batch_plan
+            .selected_inbound_link_id
+            .is_some();
+        let _selected_offer_count = prepared_execution.batch_plan.selected_offer_count;
         let processed_offer =
-            self.process_single_node_offer(inbound_link_id, to_node_id, ready_to_leave);
+            self.process_single_node_offer(inbound_link_id, to_node_id, prepared_execution);
         ProcessedNodeStepBatch {
             crossing: processed_offer.crossing,
         }
@@ -3946,10 +3955,19 @@ impl QueueSimulationState {
         &mut self,
         inbound_link_id: &str,
         to_node_id: &str,
-        ready_to_leave: &LinkReadyToLeave,
+        prepared_execution: PreparedBatchExecution,
     ) -> ProcessedSingleNodeOffer {
-        let drained_crossing =
-            self.drain_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
+        let _selected_inbound_link_id = prepared_execution
+            .batch_plan
+            .selected_inbound_link_id
+            .clone();
+        let _selected_offer_count = prepared_execution.batch_plan.selected_offer_count;
+        let drained_crossing = self.drain_prepared_node_crossing(
+            inbound_link_id,
+            to_node_id,
+            &prepared_execution.ready_to_leave,
+            prepared_execution.prepared_crossing,
+        );
         ProcessedSingleNodeOffer {
             crossing: drained_crossing.crossing,
         }
@@ -3997,6 +4015,25 @@ impl QueueSimulationState {
         NodeStepBatchPlan {
             selected_inbound_link_id,
             selected_offer_count,
+        }
+    }
+
+    fn prepare_batch_execution(
+        &mut self,
+        inbound_link_id: &str,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> PreparedBatchExecution {
+        let batch_plan = self.plan_node_step_batch(inbound_link_id, to_node_id, ready_to_leave);
+        let prepared_crossing =
+            self.prepare_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
+        PreparedBatchExecution {
+            batch_plan,
+            prepared_crossing,
+            ready_to_leave: LinkReadyToLeave {
+                free_speed_exit_s: ready_to_leave.free_speed_exit_s,
+                headway_s: ready_to_leave.headway_s,
+            },
         }
     }
 }
