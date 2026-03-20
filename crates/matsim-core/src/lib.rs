@@ -961,6 +961,11 @@ fn reroute_selected_plan_with_stats(
         let rerouted_breakdown =
             score_plan_internal(&rerouted_plan, scoring, network, &rerouted_leg_travel_times);
         let estimated_rerouted_score = rerouted_breakdown.total_score;
+        if has_time_sensitive_activity_constraints(scoring)
+            && estimated_rerouted_score <= previous_score + 1.0e-9
+        {
+            return None;
+        }
         let mut leg_counter = 0usize;
         let leg_stats = original_plan
             .elements
@@ -2369,6 +2374,16 @@ fn route_cost_from_links(
         current_time_s += cost_s;
     }
     total_cost_s
+}
+
+fn has_time_sensitive_activity_constraints(scoring: &ScoringConfig) -> bool {
+    scoring.activity_params.values().any(|params| {
+        params.opening_time_seconds.is_some()
+            || params.closing_time_seconds.is_some()
+            || params.latest_start_time_seconds.is_some()
+            || params.earliest_end_time_seconds.is_some()
+            || params.minimal_duration_seconds.is_some()
+    })
 }
 
 fn score_activity(
