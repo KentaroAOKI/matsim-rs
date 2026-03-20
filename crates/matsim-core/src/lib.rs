@@ -354,6 +354,19 @@ pub struct NodeFlowStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeInboundFlowStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub inbound_link_id: String,
+    pub traversals: usize,
+    pub avg_ready_gap_seconds: f64,
+    pub min_ready_gap_seconds: f64,
+    pub max_ready_gap_seconds: f64,
+    pub avg_queue_delay_seconds: f64,
+    pub max_queue_delay_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1340,6 +1353,36 @@ pub fn write_node_flowstats(
     Ok(())
 }
 
+pub fn write_node_inbound_flowstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;inbound_link_id;traversals;avg_ready_gap_seconds;min_ready_gap_seconds;max_ready_gap_seconds;avg_queue_delay_seconds;max_queue_delay_seconds"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_inbound_flows(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{:.6};{:.6};{:.6};{:.6};{:.6}",
+            stat.iteration,
+            stat.node_id,
+            stat.inbound_link_id,
+            stat.traversals,
+            stat.avg_ready_gap_seconds,
+            stat.min_ready_gap_seconds,
+            stat.max_ready_gap_seconds,
+            stat.avg_queue_delay_seconds,
+            stat.max_queue_delay_seconds
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -1648,6 +1691,79 @@ pub fn analyze_node_flows(output: &RunOutput, network: &Network) -> Vec<NodeFlow
                 avg_ready_gap_seconds,
                 min_ready_gap_seconds,
                 max_ready_gap_seconds,
+                avg_queue_delay_seconds: if traversals.is_empty() {
+                    0.0
+                } else {
+                    total_delay / traversals.len() as f64
+                },
+                max_queue_delay_seconds: max_delay,
+            });
+        }
+    }
+    stats
+}
+
+pub fn analyze_node_inbound_flows(
+    output: &RunOutput,
+    network: &Network,
+) -> Vec<NodeInboundFlowStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<(String, String), Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            groups
+                .entry((link.to_node_id.clone(), traversal.link_id.clone()))
+                .or_default()
+                .push(traversal);
+        }
+        for ((node_id, inbound_link_id), mut traversals) in groups {
+            traversals.sort_by(|left, right| {
+                left.free_speed_exit_time_seconds
+                    .total_cmp(&right.free_speed_exit_time_seconds)
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let mut ready_gaps = Vec::new();
+            for window in traversals.windows(2) {
+                ready_gaps.push(
+                    (window[1].free_speed_exit_time_seconds
+                        - window[0].free_speed_exit_time_seconds)
+                        .max(0.0),
+                );
+            }
+            let total_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .sum::<f64>();
+            let max_delay = traversals
+                .iter()
+                .map(|traversal| {
+                    (traversal.queue_exit_time_seconds - traversal.free_speed_exit_time_seconds)
+                        .max(0.0)
+                })
+                .fold(0.0_f64, f64::max);
+            stats.push(NodeInboundFlowStat {
+                iteration: iteration.iteration,
+                node_id,
+                inbound_link_id,
+                traversals: traversals.len(),
+                avg_ready_gap_seconds: if ready_gaps.is_empty() {
+                    0.0
+                } else {
+                    ready_gaps.iter().sum::<f64>() / ready_gaps.len() as f64
+                },
+                min_ready_gap_seconds: if ready_gaps.is_empty() {
+                    0.0
+                } else {
+                    ready_gaps.iter().copied().fold(f64::INFINITY, f64::min)
+                },
+                max_ready_gap_seconds: ready_gaps.iter().copied().fold(0.0_f64, f64::max),
                 avg_queue_delay_seconds: if traversals.is_empty() {
                     0.0
                 } else {

@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use matsim_core::{
     analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans,
     explain_person_reroute, explain_person_reroute_score, explain_person_score,
-    run_iterations_with_state, write_node_flowstats, write_outputs,
+    run_iterations_with_state, write_node_flowstats, write_node_inbound_flowstats, write_outputs,
 };
 use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
@@ -401,6 +401,11 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     let output_dir = resolve_output_dir(config_path, &scenario.config.output_directory);
     write_outputs(&output_dir, &output)?;
     write_node_flowstats(&output_dir.join("node_flowstats.csv"), &output, &scenario.network)?;
+    write_node_inbound_flowstats(
+        &output_dir.join("node_inbound_flowstats.csv"),
+        &output,
+        &scenario.network,
+    )?;
     write_population(
         &output_dir.join("output_plans.xml"),
         &final_state.population,
