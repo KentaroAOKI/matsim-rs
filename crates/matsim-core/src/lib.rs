@@ -2207,6 +2207,9 @@ fn score_activity(
             score += marginal_utility_of_early_departure_s * (earliest_end - activity_end);
         }
     }
+    if activity_end < departure_time {
+        score += marginal_utility_of_waiting_s * (departure_time - activity_end);
+    }
     if let Some(minimal_duration) = params.minimal_duration_seconds {
         if duration < minimal_duration {
             score += marginal_utility_of_early_departure_s * (minimal_duration - duration);
@@ -2550,6 +2553,34 @@ mod tests {
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(scenario.population.persons[0].selected_plan_index, 1);
         assert_eq!(scenario.population.persons[0].plans[0].score, Some(1.0));
+    }
+
+    #[test]
+    fn activity_scoring_penalizes_waiting_after_closing_time() {
+        let mut scoring = ScoringConfig {
+            waiting_utils_per_hour: -6.0,
+            ..ScoringConfig::default()
+        };
+        scoring.activity_params.insert(
+            "w".to_string(),
+            ActivityScoringParameters {
+                typical_duration_seconds: 8.0 * 3600.0,
+                opening_time_seconds: Some(7.0 * 3600.0),
+                closing_time_seconds: Some(18.0 * 3600.0),
+                ..ActivityScoringParameters::default()
+            },
+        );
+
+        let activity = Activity {
+            activity_type: "w".to_string(),
+            link_id: Some("1".to_string()),
+            end_time_seconds: None,
+            duration_seconds: None,
+        };
+
+        let score = score_activity(&activity, &scoring, 17.0 * 3600.0, Some(20.0 * 3600.0));
+
+        assert!((score + 12.0).abs() < 1.0e-9);
     }
 
     #[test]
