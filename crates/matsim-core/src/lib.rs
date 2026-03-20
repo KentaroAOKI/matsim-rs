@@ -237,6 +237,8 @@ pub struct EventAnalysis {
     pub avg_activity_duration_seconds: f64,
     pub departures: usize,
     pub arrivals: usize,
+    pub link_enters: usize,
+    pub link_leaves: usize,
     pub activity_starts: usize,
     pub activity_ends: usize,
 }
@@ -758,6 +760,8 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
     let mut activity_durations = Vec::<f64>::new();
     let mut departure_count = 0usize;
     let mut arrival_count = 0usize;
+    let mut link_enter_count = 0usize;
+    let mut link_leave_count = 0usize;
     let mut activity_start_count = 0usize;
     let mut activity_end_count = 0usize;
 
@@ -773,6 +777,8 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
                 }
                 arrival_count += 1;
             }
+            "link_enter" => link_enter_count += 1,
+            "link_leave" => link_leave_count += 1,
             event_type if event_type.starts_with("act_start:") => {
                 activity_starts.insert((event.person_id.as_str(), event.leg_index), event.time_seconds);
                 activity_start_count += 1;
@@ -801,6 +807,8 @@ fn analyze_event_records(iteration: u32, events: &[EventRecord]) -> EventAnalysi
         },
         departures: departure_count,
         arrivals: arrival_count,
+        link_enters: link_enter_count,
+        link_leaves: link_leave_count,
         activity_starts: activity_start_count,
         activity_ends: activity_end_count,
     }
@@ -1045,18 +1053,20 @@ fn write_eventstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
     writeln!(
         writer,
-        "iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends"
+        "iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;link_enters;link_leaves;activity_starts;activity_ends"
     )
     .map_err(|source| write_error(path, source))?;
     for analysis in analyze_events(output) {
         writeln!(
             writer,
-            "{};{:.6};{:.6};{};{};{};{}",
+            "{};{:.6};{:.6};{};{};{};{};{};{}",
             analysis.iteration,
             analysis.avg_leg_travel_time_seconds,
             analysis.avg_activity_duration_seconds,
             analysis.departures,
             analysis.arrivals,
+            analysis.link_enters,
+            analysis.link_leaves,
             analysis.activity_starts,
             analysis.activity_ends
         )
@@ -1187,6 +1197,13 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             *observed_link_sums.entry(link_id.to_string()).or_default() += observed_travel_time_s;
             *observed_link_counts.entry(link_id.to_string()).or_default() += 1;
             next_link_exit_time_s.insert(link_id.to_string(), exit_time_s + headway_s);
+            events.push(EventRecord {
+                time_seconds: exit_time_s,
+                person_id: person.id.clone(),
+                event_type: "link_leave".to_string(),
+                link_id: Some(link_id.to_string()),
+                leg_index: leg_order,
+            });
             current_time_s = exit_time_s;
         }
 

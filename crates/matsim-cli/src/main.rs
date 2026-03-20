@@ -215,15 +215,17 @@ fn analyze_events_command(config_path: &Path) -> Result<(), CliError> {
     let (output, _) = run_iterations_with_state(&scenario);
     let analyses = analyze_events(&output);
 
-    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends");
+    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;link_enters;link_leaves;activity_starts;activity_ends");
     for analysis in analyses {
         println!(
-            "{};{:.6};{:.6};{};{};{};{}",
+            "{};{:.6};{:.6};{};{};{};{};{};{}",
             analysis.iteration,
             analysis.avg_leg_travel_time_seconds,
             analysis.avg_activity_duration_seconds,
             analysis.departures,
             analysis.arrivals,
+            analysis.link_enters,
+            analysis.link_leaves,
             analysis.activity_starts,
             analysis.activity_ends
         );
@@ -235,15 +237,17 @@ fn analyze_events_file_command(events_path: &Path) -> Result<(), CliError> {
     let grouped = load_events(events_path)?;
     let analyses = analyze_event_groups(&grouped);
 
-    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;activity_starts;activity_ends");
+    println!("iteration;avg_leg_travel_time_seconds;avg_activity_duration_seconds;departures;arrivals;link_enters;link_leaves;activity_starts;activity_ends");
     for analysis in analyses {
         println!(
-            "{};{:.6};{:.6};{};{};{};{}",
+            "{};{:.6};{:.6};{};{};{};{};{};{}",
             analysis.iteration,
             analysis.avg_leg_travel_time_seconds,
             analysis.avg_activity_duration_seconds,
             analysis.departures,
             analysis.arrivals,
+            analysis.link_enters,
+            analysis.link_leaves,
             analysis.activity_starts,
             analysis.activity_ends
         );
