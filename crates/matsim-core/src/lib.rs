@@ -3452,6 +3452,10 @@ struct PreparedFollowupCrossing {
     ready_to_leave: LinkReadyToLeave,
 }
 
+struct NodeCrossingInput {
+    ready_to_leave: LinkReadyToLeave,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3759,16 +3763,16 @@ impl QueueLinkState {
 
     fn cross_node(
         &mut self,
-        ready_to_leave: &LinkReadyToLeave,
+        crossing_input: &NodeCrossingInput,
         pending_offer: Option<&PendingNodeOffer>,
         decision: &NodeCrossingDecision,
     ) -> NodeCrossingResult {
         let ready_time_s = pending_offer
             .map(|offer| offer.ready_time_s)
-            .unwrap_or(ready_to_leave.free_speed_exit_s);
+            .unwrap_or(crossing_input.ready_to_leave.free_speed_exit_s);
         let headway_s = pending_offer
             .map(|offer| offer.headway_s)
-            .unwrap_or(ready_to_leave.headway_s);
+            .unwrap_or(crossing_input.ready_to_leave.headway_s);
         let effective_ready_time_s = if decision.selected_inbound_link_id.as_deref().is_some_and(
             |selected_inbound_link_id| {
                 selected_inbound_link_id != decision.traversing_inbound_link_id
@@ -3811,6 +3815,15 @@ impl QueueSimulationState {
             headway_s: ready_to_leave.headway_s,
         });
         PreparedLinkOffer { ready_to_leave }
+    }
+
+    fn make_crossing_input(&self, ready_to_leave: &LinkReadyToLeave) -> NodeCrossingInput {
+        NodeCrossingInput {
+            ready_to_leave: LinkReadyToLeave {
+                free_speed_exit_s: ready_to_leave.free_speed_exit_s,
+                headway_s: ready_to_leave.headway_s,
+            },
+        }
     }
 
     fn enqueue_pending_offer(&mut self, offer: PendingNodeOffer) {
@@ -3918,13 +3931,14 @@ impl QueueSimulationState {
         ready_to_leave: &LinkReadyToLeave,
         prepared_crossing: PreparedNodeCrossing,
     ) -> DrainedNodeCrossing {
+        let crossing_input = self.make_crossing_input(ready_to_leave);
         let crossing = {
             let queue_link_state = self
                 .link_states
                 .entry(inbound_link_id.to_string())
                 .or_default();
             queue_link_state.cross_node(
-                ready_to_leave,
+                &crossing_input,
                 prepared_crossing.pending_offer.as_ref(),
                 &prepared_crossing.decision,
             )
