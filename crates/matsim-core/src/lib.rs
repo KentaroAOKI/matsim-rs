@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -75,6 +76,7 @@ pub struct Link {
     pub to_node_id: String,
     pub length_m: f64,
     pub freespeed_mps: f64,
+    pub capacity_veh_per_hour: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -177,6 +179,7 @@ pub enum CoreError {
 use thiserror::Error;
 
 pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
+    let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
     let mut total_leg_distance_m = 0.0_f64;
@@ -209,7 +212,15 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
         .population
         .persons
         .iter()
-        .map(|person| score_plan(&person.selected_plan, &scenario.config.scoring, &scenario.network))
+        .zip(simulated_leg_times.iter())
+        .map(|(person, leg_times)| {
+            score_plan(
+                &person.selected_plan,
+                &scenario.config.scoring,
+                &scenario.network,
+                leg_times,
+            )
+        })
         .sum();
 
     let score_avg = if person_count > 0.0 { total_score / person_count } else { 0.0 };
@@ -266,7 +277,18 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
 
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
-    Some(score_plan_breakdown(person, &scenario.config.scoring, &scenario.network))
+    let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
+    let person_index = scenario
+        .population
+        .persons
+        .iter()
+        .position(|candidate| candidate.id == person_id)?;
+    Some(score_plan_breakdown(
+        person,
+        &scenario.config.scoring,
+        &scenario.network,
+        &simulated_leg_times[person_index],
+    ))
 }
 
 fn write_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
@@ -369,12 +391,154 @@ fn leg_distance_m(leg: &Leg, previous_activity: Option<&Activity>, next_activity
         .sum()
 }
 
-fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> f64 {
-    score_plan_internal(plan, scoring, network).total_score
+fn simulate_leg_travel_times(population: &Population, network: &Network) -> Vec<Vec<f64>> {
+    let mut travel_times = population
+        .persons
+        .iter()
+        .map(|person| {
+            let leg_count = person
+                .selected_plan
+                .elements
+                .iter()
+                .filter(|element| matches!(element, PlanElement::Leg(_)))
+                .count();
+            vec![0.0; leg_count]
+        })
+        .collect::<Vec<_>>();
+
+    let mut pending = BinaryHeap::new();
+    for (person_index, person) in population.persons.iter().enumerate() {
+        if let Some((leg_index, departure_time_s)) = first_leg_departure(&person.selected_plan) {
+            pending.push(PendingLeg {
+                departure_time_ms: to_millis(departure_time_s),
+                departure_time_s,
+                person_index,
+                plan_element_index: leg_index,
+            });
+        }
+    }
+
+    let mut next_link_exit_time_s = BTreeMap::<String, f64>::new();
+
+    while let Some(pending_leg) = pending.pop() {
+        let person = &population.persons[pending_leg.person_index];
+        let Some(PlanElement::Leg(leg)) = person.selected_plan.elements.get(pending_leg.plan_element_index) else {
+            continue;
+        };
+        let previous_activity = previous_activity_at(&person.selected_plan, pending_leg.plan_element_index);
+        let next_activity = next_activity_at(&person.selected_plan, pending_leg.plan_element_index);
+        let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
+
+        let mut current_time_s = pending_leg.departure_time_s;
+        for link_id in route_links {
+            let Some(link) = network.links.get(link_id) else {
+                continue;
+            };
+            let free_speed_exit_s = current_time_s + link.length_m / link.freespeed_mps;
+            let queue_exit_s = next_link_exit_time_s.get(link_id).copied().unwrap_or(0.0);
+            let exit_time_s = free_speed_exit_s.max(queue_exit_s);
+            let headway_s = if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
+                3600.0 / link.capacity_veh_per_hour
+            } else {
+                0.0
+            };
+            next_link_exit_time_s.insert(link_id.to_string(), exit_time_s + headway_s);
+            current_time_s = exit_time_s;
+        }
+
+        let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
+        let leg_order = leg_order_for_element(&person.selected_plan, pending_leg.plan_element_index);
+        if let Some(slot) = travel_times[pending_leg.person_index].get_mut(leg_order) {
+            *slot = travel_time_s;
+        }
+
+        if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
+            &person.selected_plan,
+            pending_leg.plan_element_index,
+            pending_leg.departure_time_s + travel_time_s,
+        ) {
+            pending.push(PendingLeg {
+                departure_time_ms: to_millis(next_departure_s),
+                departure_time_s: next_departure_s,
+                person_index: pending_leg.person_index,
+                plan_element_index: next_leg_index,
+            });
+        }
+    }
+
+    travel_times
 }
 
-fn score_plan_breakdown(person: &Person, scoring: &ScoringConfig, network: &Network) -> PersonScoreBreakdown {
-    let breakdown = score_plan_internal(&person.selected_plan, scoring, network);
+fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
+    let mut current_time_s = 0.0;
+    for (index, element) in plan.elements.iter().enumerate() {
+        match element {
+            PlanElement::Activity(activity) => current_time_s = activity_departure_time(activity, current_time_s),
+            PlanElement::Leg(_) => return Some((index, current_time_s)),
+        }
+    }
+    None
+}
+
+fn next_leg_departure(plan: &Plan, leg_index: usize, arrival_time_s: f64) -> Option<(usize, f64)> {
+    let PlanElement::Activity(activity) = plan.elements.get(leg_index + 1)? else {
+        return None;
+    };
+    let departure_time_s = activity_departure_time(activity, arrival_time_s);
+    for index in (leg_index + 2)..plan.elements.len() {
+        if matches!(plan.elements[index], PlanElement::Leg(_)) {
+            return Some((index, departure_time_s));
+        }
+    }
+    None
+}
+
+fn activity_departure_time(activity: &Activity, arrival_time_s: f64) -> f64 {
+    if let Some(end_time_s) = activity.end_time_seconds {
+        arrival_time_s.max(end_time_s)
+    } else if let Some(duration_s) = activity.duration_seconds {
+        arrival_time_s + duration_s
+    } else {
+        arrival_time_s
+    }
+}
+
+fn previous_activity_at(plan: &Plan, leg_index: usize) -> Option<&Activity> {
+    plan.elements[..leg_index].iter().rev().find_map(|element| match element {
+        PlanElement::Activity(activity) => Some(activity),
+        _ => None,
+    })
+}
+
+fn next_activity_at(plan: &Plan, leg_index: usize) -> Option<&Activity> {
+    plan.elements.iter().skip(leg_index + 1).find_map(|element| match element {
+        PlanElement::Activity(activity) => Some(activity),
+        _ => None,
+    })
+}
+
+fn leg_order_for_element(plan: &Plan, leg_index: usize) -> usize {
+    plan.elements[..leg_index]
+        .iter()
+        .filter(|element| matches!(element, PlanElement::Leg(_)))
+        .count()
+}
+
+fn to_millis(time_s: f64) -> i64 {
+    (time_s * 1000.0).round() as i64
+}
+
+fn score_plan(plan: &Plan, scoring: &ScoringConfig, network: &Network, leg_travel_times: &[f64]) -> f64 {
+    score_plan_internal(plan, scoring, network, leg_travel_times).total_score
+}
+
+fn score_plan_breakdown(
+    person: &Person,
+    scoring: &ScoringConfig,
+    network: &Network,
+    leg_travel_times: &[f64],
+) -> PersonScoreBreakdown {
+    let breakdown = score_plan_internal(&person.selected_plan, scoring, network, leg_travel_times);
     PersonScoreBreakdown {
         person_id: person.id.clone(),
         total_score: breakdown.total_score,
@@ -387,7 +551,46 @@ struct PlanScoreBreakdown {
     items: Vec<ScoreBreakdownItem>,
 }
 
-fn score_plan_internal(plan: &Plan, scoring: &ScoringConfig, network: &Network) -> PlanScoreBreakdown {
+#[derive(Clone, Copy, Debug)]
+struct PendingLeg {
+    departure_time_ms: i64,
+    departure_time_s: f64,
+    person_index: usize,
+    plan_element_index: usize,
+}
+
+impl Eq for PendingLeg {}
+
+impl PartialEq for PendingLeg {
+    fn eq(&self, other: &Self) -> bool {
+        self.departure_time_ms == other.departure_time_ms
+            && self.person_index == other.person_index
+            && self.plan_element_index == other.plan_element_index
+    }
+}
+
+impl Ord for PendingLeg {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .departure_time_ms
+            .cmp(&self.departure_time_ms)
+            .then_with(|| other.person_index.cmp(&self.person_index))
+            .then_with(|| other.plan_element_index.cmp(&self.plan_element_index))
+    }
+}
+
+impl PartialOrd for PendingLeg {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn score_plan_internal(
+    plan: &Plan,
+    scoring: &ScoringConfig,
+    network: &Network,
+    leg_travel_times: &[f64],
+) -> PlanScoreBreakdown {
     let activities: Vec<&Activity> = plan
         .elements
         .iter()
@@ -409,26 +612,22 @@ fn score_plan_internal(plan: &Plan, scoring: &ScoringConfig, network: &Network) 
     let mut activity_windows: Vec<(usize, f64, f64)> = Vec::with_capacity(activities.len());
     let mut seen_modes = BTreeMap::<String, ()>::new();
     let mut last_activity: Option<&Activity> = None;
+    let mut leg_index = 0usize;
 
     for element in &plan.elements {
         match element {
             PlanElement::Activity(activity) => {
                 let start = current_time;
-                let end = if let Some(end_time) = activity.end_time_seconds {
-                    end_time
-                } else if let Some(duration) = activity.duration_seconds {
-                    start + duration
-                } else {
-                    start
-                };
+                let end = activity_departure_time(activity, start);
                 let activity_index = activity_windows.len();
                 activity_windows.push((activity_index, start, end));
                 current_time = end;
                 last_activity = Some(activity);
             }
             PlanElement::Leg(leg) => {
-                let travel_time =
-                    leg_travel_time_seconds(leg, last_activity, next_activity(plan, leg), network);
+                let travel_time = leg_travel_times.get(leg_index).copied().unwrap_or_else(|| {
+                    leg_travel_time_seconds(leg, last_activity, next_activity(plan, leg), network)
+                });
                 let leg_score = score_leg(leg, scoring, network, travel_time, &mut seen_modes);
                 score += leg_score;
                 items.push(ScoreBreakdownItem {
@@ -438,6 +637,7 @@ fn score_plan_internal(plan: &Plan, scoring: &ScoringConfig, network: &Network) 
                     score: leg_score,
                 });
                 current_time += travel_time;
+                leg_index += 1;
             }
         }
     }
@@ -684,6 +884,7 @@ mod tests {
                     to_node_id: to_node_id.to_string(),
                     length_m: length,
                     freespeed_mps: 1.0,
+                    capacity_veh_per_hour: 3600.0,
                 },
             );
         }
@@ -719,6 +920,7 @@ mod tests {
                 to_node_id: "n1".to_string(),
                 length_m: 10.0,
                 freespeed_mps: 1.0,
+                capacity_veh_per_hour: 3600.0,
             },
         );
 

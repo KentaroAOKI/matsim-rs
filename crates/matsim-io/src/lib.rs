@@ -225,6 +225,11 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
                     .map(|value| parse_f64(path, value))
                     .transpose()?
                     .unwrap_or(0.0);
+                let capacity_veh_per_hour = attr_string(path, e, b"capacity")?
+                    .as_deref()
+                    .map(|value| parse_f64(path, value))
+                    .transpose()?
+                    .unwrap_or(f64::INFINITY);
                 let freespeed_mps = attr_string(path, e, b"freespeed")?
                     .as_deref()
                     .map(|value| parse_f64(path, value))
@@ -239,6 +244,7 @@ pub fn load_network(path: &Path) -> Result<Network, IoError> {
                         to_node_id,
                         length_m,
                         freespeed_mps,
+                        capacity_veh_per_hour,
                     },
                 );
             }
