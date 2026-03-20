@@ -3456,6 +3456,26 @@ struct NodeCrossingInput {
     ready_to_leave: LinkReadyToLeave,
 }
 
+impl NodeCrossingInput {
+    fn from_ready_to_leave(ready_to_leave: &LinkReadyToLeave) -> Self {
+        Self {
+            ready_to_leave: LinkReadyToLeave {
+                free_speed_exit_s: ready_to_leave.free_speed_exit_s,
+                headway_s: ready_to_leave.headway_s,
+            },
+        }
+    }
+
+    fn from_pending_offer(pending_offer: &PendingNodeOffer) -> Self {
+        Self {
+            ready_to_leave: LinkReadyToLeave {
+                free_speed_exit_s: pending_offer.ready_time_s,
+                headway_s: pending_offer.headway_s,
+            },
+        }
+    }
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3818,12 +3838,14 @@ impl QueueSimulationState {
     }
 
     fn make_crossing_input(&self, ready_to_leave: &LinkReadyToLeave) -> NodeCrossingInput {
-        NodeCrossingInput {
-            ready_to_leave: LinkReadyToLeave {
-                free_speed_exit_s: ready_to_leave.free_speed_exit_s,
-                headway_s: ready_to_leave.headway_s,
-            },
-        }
+        NodeCrossingInput::from_ready_to_leave(ready_to_leave)
+    }
+
+    fn make_crossing_input_from_offer(
+        &self,
+        pending_offer: &PendingNodeOffer,
+    ) -> NodeCrossingInput {
+        NodeCrossingInput::from_pending_offer(pending_offer)
     }
 
     fn enqueue_pending_offer(&mut self, offer: PendingNodeOffer) {
@@ -3931,7 +3953,11 @@ impl QueueSimulationState {
         ready_to_leave: &LinkReadyToLeave,
         prepared_crossing: PreparedNodeCrossing,
     ) -> DrainedNodeCrossing {
-        let crossing_input = self.make_crossing_input(ready_to_leave);
+        let crossing_input = prepared_crossing
+            .pending_offer
+            .as_ref()
+            .map(|pending_offer| self.make_crossing_input_from_offer(pending_offer))
+            .unwrap_or_else(|| self.make_crossing_input(ready_to_leave));
         let crossing = {
             let queue_link_state = self
                 .link_states
