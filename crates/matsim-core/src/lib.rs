@@ -180,6 +180,8 @@ pub struct RerouteStat {
     pub person_id: String,
     pub previous_links: String,
     pub rerouted_links: String,
+    pub previous_score: f64,
+    pub estimated_rerouted_score: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -581,7 +583,12 @@ fn apply_replanning_hook(
             applied: 0,
         })
         .collect::<Vec<_>>();
-    for person in &mut scenario.population.persons {
+    for (person, executed_score) in scenario
+        .population
+        .persons
+        .iter_mut()
+        .zip(executed_scores.iter().copied())
+    {
         let Some(strategy_name) = select_strategy(
             &scenario.config.replanning.strategies,
             scenario.config.random_seed,
@@ -601,7 +608,13 @@ fn apply_replanning_hook(
         let replanned = match strategy_name {
             "BestScore" => apply_best_score_strategy(person),
             "ReRoute" => {
-                let detail = reroute_selected_plan_with_stats(person, &scenario.network, observed_link_costs);
+                let detail = reroute_selected_plan_with_stats(
+                    person,
+                    &scenario.network,
+                    &scenario.config.scoring,
+                    observed_link_costs,
+                    executed_score,
+                );
                 if let Some(detail) = detail {
                     reroute_details.push(detail);
                     true
@@ -768,7 +781,9 @@ fn apply_best_score_strategy(person: &mut Person) -> bool {
 fn reroute_selected_plan_with_stats(
     person: &mut Person,
     network: &Network,
+    scoring: &ScoringConfig,
     link_costs: &BTreeMap<String, f64>,
+    previous_score: f64,
 ) -> Option<RerouteStat> {
     let mut rerouted_plan = person.selected_plan().clone();
     let mut rerouted = false;
@@ -843,6 +858,13 @@ fn reroute_selected_plan_with_stats(
             person_id: person.id.clone(),
             previous_links,
             rerouted_links,
+            previous_score,
+            estimated_rerouted_score: estimate_plan_score_from_link_costs(
+                person.selected_plan(),
+                scoring,
+                network,
+                link_costs,
+            ),
         });
     }
 
@@ -1323,13 +1345,23 @@ fn write_replanningstats(path: &Path, output: &RunOutput) -> Result<(), CoreErro
 
 fn write_reroutestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;person_id;previous_links;rerouted_links").map_err(|source| write_error(path, source))?;
+    writeln!(
+        writer,
+        "iteration;person_id;previous_links;rerouted_links;previous_score;estimated_rerouted_score;estimated_score_delta"
+    )
+    .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for detail in &iteration.replanning_summary.reroute_details {
             writeln!(
                 writer,
-                "{};{};{};{}",
-                iteration.iteration, detail.person_id, detail.previous_links, detail.rerouted_links
+                "{};{};{};{};{:.6};{:.6};{:.6}",
+                iteration.iteration,
+                detail.person_id,
+                detail.previous_links,
+                detail.rerouted_links,
+                detail.previous_score,
+                detail.estimated_rerouted_score,
+                detail.estimated_rerouted_score - detail.previous_score
             )
             .map_err(|source| write_error(path, source))?;
         }
@@ -1750,6 +1782,40 @@ fn score_plan_internal(
         total_score: score,
         items,
     }
+}
+
+fn estimate_plan_score_from_link_costs(
+    plan: &Plan,
+    scoring: &ScoringConfig,
+    network: &Network,
+    link_costs: &BTreeMap<String, f64>,
+) -> f64 {
+    let leg_travel_times = plan
+        .elements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, element)| match element {
+            PlanElement::Leg(leg) => {
+                let previous_activity = previous_activity_at(plan, index);
+                let next_activity = next_activity_at(plan, index);
+                let travel_time = route_link_sequence(leg, previous_activity, next_activity, network)
+                    .into_iter()
+                    .map(|link_id| {
+                        link_costs.get(link_id).copied().unwrap_or_else(|| {
+                            network
+                                .links
+                                .get(link_id)
+                                .map(|link| link.length_m / link.freespeed_mps)
+                                .unwrap_or(0.0)
+                        })
+                    })
+                    .sum::<f64>();
+                Some(travel_time)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    score_plan_internal(plan, scoring, network, &leg_travel_times).total_score
 }
 
 fn score_activity(
