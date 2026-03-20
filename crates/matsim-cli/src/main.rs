@@ -5,7 +5,7 @@ use std::str::FromStr;
 use clap::{Parser, Subcommand};
 use matsim_core::{
     analyze_event_groups, analyze_events, analyze_link_event_groups, explain_person_plans, explain_person_reroute,
-    explain_person_score, run_iterations_with_state, write_outputs,
+    explain_person_reroute_score, explain_person_score, run_iterations_with_state, write_outputs,
 };
 use matsim_io::{load_events, load_scenario, write_population};
 use thiserror::Error;
@@ -47,6 +47,14 @@ enum Command {
         iteration: Option<u32>,
     },
     ExplainReroute {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        person_id: String,
+        #[arg(long)]
+        iteration: Option<u32>,
+    },
+    ExplainRerouteScore {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
@@ -231,6 +239,11 @@ fn run() -> Result<(), CliError> {
             person_id,
             iteration,
         } => explain_reroute_command(&config, &person_id, iteration),
+        Command::ExplainRerouteScore {
+            config,
+            person_id,
+            iteration,
+        } => explain_reroute_score_command(&config, &person_id, iteration),
         Command::ExplainPlans {
             config,
             person_id,
@@ -554,6 +567,31 @@ fn explain_reroute_command(config_path: &Path, person_id: &str, iteration: Optio
         println!("  current_links={}", leg.current_link_ids.join(","));
         println!("  rerouted_nodes={}", leg.rerouted_node_ids.join(","));
         println!("  rerouted_links={}", leg.rerouted_link_ids.join(","));
+    }
+    Ok(())
+}
+
+fn explain_reroute_score_command(
+    config_path: &Path,
+    person_id: &str,
+    iteration: Option<u32>,
+) -> Result<(), CliError> {
+    let scenario = resolve_scenario_for_iteration(config_path, iteration)?;
+    let breakdown = explain_person_reroute_score(&scenario, person_id)
+        .ok_or_else(|| CliError::PersonNotFound(person_id.to_string()))?;
+
+    println!("person_id={}", breakdown.person_id);
+    if let Some(iteration) = iteration {
+        println!("iteration={iteration}");
+    }
+    println!("current_total_score={:.6}", breakdown.current_total_score);
+    println!("rerouted_total_score={:.6}", breakdown.rerouted_total_score);
+    println!("delta={:.6}", breakdown.rerouted_total_score - breakdown.current_total_score);
+    for item in breakdown.items {
+        println!(
+            "{} current={:.6} rerouted={:.6} delta={:.6}",
+            item.label, item.current_score, item.rerouted_score, item.delta
+        );
     }
     Ok(())
 }

@@ -288,6 +288,14 @@ pub struct PersonScoreBreakdown {
 }
 
 #[derive(Debug, Clone)]
+pub struct PersonRerouteScoreBreakdown {
+    pub person_id: String,
+    pub current_total_score: f64,
+    pub rerouted_total_score: f64,
+    pub items: Vec<RerouteScoreItem>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonRerouteExplanation {
     pub person_id: String,
     pub legs: Vec<RerouteLegExplanation>,
@@ -326,6 +334,14 @@ pub struct ScoreBreakdownItem {
     pub start_time_seconds: f64,
     pub end_time_seconds: f64,
     pub score: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RerouteScoreItem {
+    pub label: String,
+    pub current_score: f64,
+    pub rerouted_score: f64,
+    pub delta: f64,
 }
 
 #[derive(Debug, Error)]
@@ -992,6 +1008,81 @@ pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<Pers
         &scenario.network,
         &simulation.leg_times[person_index],
     ))
+}
+
+pub fn explain_person_reroute_score(
+    scenario: &Scenario,
+    person_id: &str,
+) -> Option<PersonRerouteScoreBreakdown> {
+    let person = scenario.population.persons.iter().find(|person| person.id == person_id)?;
+    let simulation = simulate_traffic(&scenario.population, &scenario.network);
+    let person_index = scenario
+        .population
+        .persons
+        .iter()
+        .position(|candidate| candidate.id == person_id)?;
+    let current_breakdown = score_plan_internal(
+        person.selected_plan(),
+        &scenario.config.scoring,
+        &scenario.network,
+        &simulation.leg_times[person_index],
+    );
+
+    let mut rerouted_plan = person.selected_plan().clone();
+    for leg_index in 0..rerouted_plan.elements.len() {
+        let previous_link_id = previous_activity_at(&rerouted_plan, leg_index)
+            .and_then(|activity| activity.link_id.as_deref());
+        let next_link_id = next_activity_at(&rerouted_plan, leg_index)
+            .and_then(|activity| activity.link_id.as_deref());
+        let Some(PlanElement::Leg(_)) = rerouted_plan.elements.get(leg_index) else {
+            continue;
+        };
+        let departure_time_s = leg_departure_time_seconds(&rerouted_plan, leg_index).unwrap_or(0.0);
+        let route_node_ids = shortest_route_node_ids_for_departure(
+            &scenario.network,
+            previous_link_id,
+            next_link_id,
+            &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            departure_time_s,
+        )?;
+        let PlanElement::Leg(leg) = &mut rerouted_plan.elements[leg_index] else {
+            continue;
+        };
+        leg.route_node_ids = route_node_ids;
+    }
+
+    let rerouted_leg_travel_times = estimate_plan_leg_travel_times_from_link_costs(
+        &rerouted_plan,
+        &scenario.network,
+        &simulation.observed_link_costs,
+        &simulation.observed_link_time_profiles,
+    );
+    let rerouted_breakdown = score_plan_internal(
+        &rerouted_plan,
+        &scenario.config.scoring,
+        &scenario.network,
+        &rerouted_leg_travel_times,
+    );
+
+    let items = current_breakdown
+        .items
+        .iter()
+        .zip(rerouted_breakdown.items.iter())
+        .map(|(current, rerouted)| RerouteScoreItem {
+            label: current.label.clone(),
+            current_score: current.score,
+            rerouted_score: rerouted.score,
+            delta: rerouted.score - current.score,
+        })
+        .collect();
+
+    Some(PersonRerouteScoreBreakdown {
+        person_id: person.id.clone(),
+        current_total_score: current_breakdown.total_score,
+        rerouted_total_score: rerouted_breakdown.total_score,
+        items,
+    })
 }
 
 pub fn analyze_events(output: &RunOutput) -> Vec<EventAnalysis> {
@@ -1940,7 +2031,17 @@ fn estimate_plan_score_from_link_costs(
     network: &Network,
     link_costs: &BTreeMap<String, f64>,
 ) -> f64 {
-    let leg_travel_times = plan
+    let leg_travel_times = estimate_plan_leg_travel_times_from_link_costs(plan, network, link_costs, &BTreeMap::new());
+    score_plan_internal(plan, scoring, network, &leg_travel_times).total_score
+}
+
+fn estimate_plan_leg_travel_times_from_link_costs(
+    plan: &Plan,
+    network: &Network,
+    link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+) -> Vec<f64> {
+    plan
         .elements
         .iter()
         .enumerate()
@@ -1948,24 +2049,20 @@ fn estimate_plan_score_from_link_costs(
             PlanElement::Leg(leg) => {
                 let previous_activity = previous_activity_at(plan, index);
                 let next_activity = next_activity_at(plan, index);
+                let mut current_time_s = leg_departure_time_seconds(plan, index).unwrap_or(0.0);
                 let travel_time = route_link_sequence(leg, previous_activity, next_activity, network)
                     .into_iter()
                     .map(|link_id| {
-                        link_costs.get(link_id).copied().unwrap_or_else(|| {
-                            network
-                                .links
-                                .get(link_id)
-                                .map(|link| link.length_m / link.freespeed_mps)
-                                .unwrap_or(0.0)
-                        })
+                        let cost = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
+                        current_time_s += cost;
+                        cost
                     })
                     .sum::<f64>();
                 Some(travel_time)
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
-    score_plan_internal(plan, scoring, network, &leg_travel_times).total_score
+        .collect::<Vec<_>>()
 }
 
 fn choose_better_route_candidate(
