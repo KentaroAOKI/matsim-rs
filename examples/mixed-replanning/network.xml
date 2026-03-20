@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v1.dtd">
+<network name="mixed replanning network">
+  <nodes>
+    <node id="s0" x="0" y="0"/>
+    <node id="s1" x="10" y="0"/>
+    <node id="slow" x="20" y="10"/>
+    <node id="fast" x="20" y="-10"/>
+    <node id="target" x="30" y="0"/>
+    <node id="s2" x="40" y="0"/>
+  </nodes>
+  <links capperiod="01:00:00">
+    <link id="start" from="s0" to="s1" length="10.0" capacity="3600" freespeed="10.0" permlanes="1" />
+    <link id="slow-1" from="s1" to="slow" length="100.0" capacity="3600" freespeed="10.0" permlanes="1" />
+    <link id="slow-2" from="slow" to="target" length="100.0" capacity="3600" freespeed="10.0" permlanes="1" />
+    <link id="fast-1" from="s1" to="fast" length="10.0" capacity="3600" freespeed="10.0" permlanes="1" />
+    <link id="fast-2" from="fast" to="target" length="10.0" capacity="3600" freespeed="10.0" permlanes="1" />
+    <link id="end" from="target" to="s2" length="10.0" capacity="3600" freespeed="10.0" permlanes="1" />
+  </links>
+</network>

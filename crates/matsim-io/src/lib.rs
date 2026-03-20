@@ -602,4 +602,25 @@ mod tests {
         assert_eq!(explanation.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
         assert!(explanation.legs[0].rerouted_cost_seconds < explanation.legs[0].current_cost_seconds);
     }
+
+    #[test]
+    fn mixed_fixture_uses_best_score_and_reroute_together() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/mixed-replanning/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let output = run_iterations(&scenario);
+        assert_eq!(output.iterations.len(), 2);
+        assert_eq!(output.iterations[0].replanning_summary.persons_replanned, 2);
+        assert_eq!(output.iterations[1].replanning_summary.persons_replanned, 0);
+        assert!((output.iterations[0].score_stats.avg_executed - 87.097_464).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_executed - 93.697_622).abs() < 1.0e-6);
+        assert!((output.iterations[1].score_stats.avg_average - 90.397_543).abs() < 1.0e-6);
+
+        let reroute = explain_person_reroute(&scenario, "route").unwrap();
+        assert_eq!(reroute.legs[0].current_link_ids, vec!["slow-1", "slow-2", "end"]);
+        assert_eq!(reroute.legs[0].rerouted_link_ids, vec!["fast-1", "fast-2", "end"]);
+        assert!(reroute.legs[0].rerouted_cost_seconds < reroute.legs[0].current_cost_seconds);
+    }
 }

@@ -3,3 +3,4 @@
 /.vscode
 /examples/two-plans/output
 /examples/reroute/output
+/examples/mixed-replanning/output

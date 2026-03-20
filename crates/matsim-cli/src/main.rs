@@ -111,7 +111,12 @@ fn resolve_output_dir(config_path: &Path, configured_output: &str) -> PathBuf {
 }
 
 fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
-    for name in ["scorestats.csv", "modestats.csv", "traveldistancestats.csv"] {
+    for name in [
+        "scorestats.csv",
+        "modestats.csv",
+        "traveldistancestats.csv",
+        "observed_link_costs.csv",
+    ] {
         let left_path = left.join(name);
         let right_path = right.join(name);
         let left_text = fs::read_to_string(&left_path).map_err(|source| CliError::ReadFile {
