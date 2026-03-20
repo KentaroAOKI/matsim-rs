@@ -1039,6 +1039,15 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
         let leg_order = leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
 
+        if let Some(activity) = previous_activity {
+            events.push(EventRecord {
+                time_seconds: pending_leg.departure_time_s,
+                person_id: person.id.clone(),
+                event_type: format!("act_end:{}", activity.activity_type),
+                link_id: activity.link_id.clone(),
+                leg_index: leg_order,
+            });
+        }
         events.push(EventRecord {
             time_seconds: pending_leg.departure_time_s,
             person_id: person.id.clone(),
@@ -1085,6 +1094,15 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             link_id: next_activity.and_then(|activity| activity.link_id.clone()),
             leg_index: leg_order,
         });
+        if let Some(activity) = next_activity {
+            events.push(EventRecord {
+                time_seconds: pending_leg.departure_time_s + travel_time_s,
+                person_id: person.id.clone(),
+                event_type: format!("act_start:{}", activity.activity_type),
+                link_id: activity.link_id.clone(),
+                leg_index: leg_order,
+            });
+        }
 
         if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
             &person.selected_plan(),
