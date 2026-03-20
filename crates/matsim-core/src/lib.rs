@@ -193,6 +193,7 @@ struct SimulationState {
 struct SimulationSnapshot {
     leg_times: Vec<Vec<f64>>,
     observed_link_costs: BTreeMap<String, f64>,
+    observed_link_time_profiles: BTreeMap<String, BTreeMap<u32, f64>>,
     events: Vec<EventRecord>,
 }
 
@@ -507,7 +508,13 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         },
     };
     let replanning_summary =
-        apply_replanning_hook(scenario, &executed_scores, &simulation.observed_link_costs, iteration);
+        apply_replanning_hook(
+            scenario,
+            &executed_scores,
+            &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            iteration,
+        );
     let observed_link_costs = simulation
         .observed_link_costs
         .iter()
@@ -533,6 +540,7 @@ fn apply_replanning_hook(
     scenario: &mut Scenario,
     executed_scores: &[f64],
     observed_link_costs: &BTreeMap<String, f64>,
+    observed_link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
     iteration: u32,
 ) -> ReplanningSummary {
     for (person, executed_score) in scenario
@@ -613,6 +621,7 @@ fn apply_replanning_hook(
                     &scenario.network,
                     &scenario.config.scoring,
                     observed_link_costs,
+                    observed_link_time_profiles,
                     executed_score,
                 );
                 if let Some(detail) = detail {
@@ -783,6 +792,7 @@ fn reroute_selected_plan_with_stats(
     network: &Network,
     scoring: &ScoringConfig,
     link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
     previous_score: f64,
 ) -> Option<RerouteStat> {
     let mut rerouted_plan = person.selected_plan().clone();
@@ -797,7 +807,15 @@ fn reroute_selected_plan_with_stats(
         let Some(PlanElement::Leg(_)) = rerouted_plan.elements.get(leg_index) else {
             continue;
         };
-        let Some(route_node_ids) = shortest_route_node_ids(network, previous_link_id, next_link_id, link_costs) else {
+        let departure_time_s = leg_departure_time_seconds(&rerouted_plan, leg_index).unwrap_or(0.0);
+        let Some(route_node_ids) = shortest_route_node_ids_for_departure(
+            network,
+            previous_link_id,
+            next_link_id,
+            link_costs,
+            link_time_profiles,
+            departure_time_s,
+        ) else {
             continue;
         };
         let PlanElement::Leg(leg) = &mut rerouted_plan.elements[leg_index] else {
@@ -810,6 +828,8 @@ fn reroute_selected_plan_with_stats(
     }
 
     if rerouted {
+        let estimated_rerouted_score =
+            estimate_plan_score_from_link_costs(&rerouted_plan, scoring, network, link_costs);
         rerouted_plan.score = None;
         person.plans.push(rerouted_plan);
         person.selected_plan_index = person.plans.len() - 1;
@@ -859,12 +879,7 @@ fn reroute_selected_plan_with_stats(
             previous_links,
             rerouted_links,
             previous_score,
-            estimated_rerouted_score: estimate_plan_score_from_link_costs(
-                person.selected_plan(),
-                scoring,
-                network,
-                link_costs,
-            ),
+            estimated_rerouted_score,
         });
     }
 
@@ -1069,11 +1084,13 @@ pub fn explain_person_reroute(scenario: &Scenario, person_id: &str) -> Option<Pe
                     .unwrap_or(0.0)
             })
             .sum::<f64>();
-        let rerouted_node_ids = shortest_route_node_ids(
+        let rerouted_node_ids = shortest_route_node_ids_for_departure(
             &scenario.network,
             previous_activity.and_then(|activity| activity.link_id.as_deref()),
             next_activity.and_then(|activity| activity.link_id.as_deref()),
             &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            leg_departure_time_seconds(plan, element_index).unwrap_or(0.0),
         )
         .unwrap_or_default();
         let rerouted_leg = Leg {
@@ -1423,6 +1440,8 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         .collect::<Vec<_>>();
     let mut observed_link_sums = BTreeMap::<String, f64>::new();
     let mut observed_link_counts = BTreeMap::<String, usize>::new();
+    let mut observed_link_profile_sums = BTreeMap::<String, BTreeMap<u32, f64>>::new();
+    let mut observed_link_profile_counts = BTreeMap::<String, BTreeMap<u32, usize>>::new();
     let mut events = Vec::<EventRecord>::new();
 
     let mut pending = BinaryHeap::new();
@@ -1490,6 +1509,17 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             let observed_travel_time_s = (exit_time_s - current_time_s).max(0.0);
             *observed_link_sums.entry(link_id.to_string()).or_default() += observed_travel_time_s;
             *observed_link_counts.entry(link_id.to_string()).or_default() += 1;
+            let bucket = (current_time_s / 3600.0).floor().max(0.0) as u32;
+            *observed_link_profile_sums
+                .entry(link_id.to_string())
+                .or_default()
+                .entry(bucket)
+                .or_default() += observed_travel_time_s;
+            *observed_link_profile_counts
+                .entry(link_id.to_string())
+                .or_default()
+                .entry(bucket)
+                .or_default() += 1;
             next_link_exit_time_s.insert(link_id.to_string(), exit_time_s + headway_s);
             events.push(EventRecord {
                 time_seconds: exit_time_s,
@@ -1549,10 +1579,28 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
             (link_id.clone(), observed_cost_s)
         })
         .collect();
+    let observed_link_time_profiles = observed_link_profile_sums
+        .into_iter()
+        .map(|(link_id, bucket_sums)| {
+            let profile = bucket_sums
+                .into_iter()
+                .map(|(bucket, sum)| {
+                    let count = observed_link_profile_counts
+                        .get(&link_id)
+                        .and_then(|counts| counts.get(&bucket))
+                        .copied()
+                        .unwrap_or(1);
+                    (bucket, sum / count as f64)
+                })
+                .collect::<BTreeMap<_, _>>();
+            (link_id, profile)
+        })
+        .collect();
 
     SimulationSnapshot {
         leg_times: travel_times,
         observed_link_costs,
+        observed_link_time_profiles,
         events,
     }
 }
@@ -1563,6 +1611,18 @@ fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
         match element {
             PlanElement::Activity(activity) => current_time_s = activity_departure_time(activity, current_time_s),
             PlanElement::Leg(_) => return Some((index, current_time_s)),
+        }
+    }
+    None
+}
+
+fn leg_departure_time_seconds(plan: &Plan, leg_index: usize) -> Option<f64> {
+    let mut current_time_s = 0.0;
+    for (index, element) in plan.elements.iter().enumerate() {
+        match element {
+            PlanElement::Activity(activity) => current_time_s = activity_departure_time(activity, current_time_s),
+            PlanElement::Leg(_) if index == leg_index => return Some(current_time_s),
+            PlanElement::Leg(_) => {}
         }
     }
     None
@@ -1987,11 +2047,13 @@ fn find_link_between_nodes<'a>(network: &'a Network, from_node_id: &str, to_node
         .map(|link| link.id.as_str())
 }
 
-fn shortest_route_node_ids(
+fn shortest_route_node_ids_for_departure(
     network: &Network,
     previous_link_id: Option<&str>,
     next_link_id: Option<&str>,
     link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+    departure_time_s: f64,
 ) -> Option<Vec<String>> {
     let previous_link = network.links.get(previous_link_id?)?;
     let next_link = network.links.get(next_link_id?)?;
@@ -2045,12 +2107,12 @@ fn shortest_route_node_ids(
         }
 
         for link in network.links.values().filter(|link| link.from_node_id == current.node_id) {
-            let link_cost_ms = to_millis(
-                link_costs
-                    .get(&link.id)
-                    .copied()
-                    .unwrap_or_else(|| link.length_m / link.freespeed_mps),
-            );
+            let link_cost_ms = to_millis(link_cost_for_departure(
+                &link.id,
+                departure_time_s,
+                link_costs,
+                link_time_profiles,
+            ));
             let next_cost_ms = current.cost_ms + link_cost_ms;
             let should_update = best_cost_ms
                 .get(&link.to_node_id)
@@ -2079,6 +2141,26 @@ fn shortest_route_node_ids(
     }
     route_node_ids.reverse();
     Some(route_node_ids)
+}
+
+fn link_cost_for_departure(
+    link_id: &str,
+    departure_time_s: f64,
+    link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+) -> f64 {
+    let bucket = (departure_time_s / 3600.0).floor().max(0.0) as u32;
+    link_time_profiles
+        .get(link_id)
+        .and_then(|profile| {
+            profile
+                .get(&bucket)
+                .copied()
+                .or_else(|| profile.range(..=bucket).next_back().map(|(_, value)| *value))
+                .or_else(|| profile.range(bucket..).next().map(|(_, value)| *value))
+        })
+        .or_else(|| link_costs.get(link_id).copied())
+        .unwrap_or(0.0)
 }
 
 #[cfg(test)]
@@ -2199,7 +2281,8 @@ mod tests {
             },
         };
 
-        let summary = apply_replanning_hook(&mut scenario, &[1.0], &BTreeMap::new(), 0);
+        let summary =
+            apply_replanning_hook(&mut scenario, &[1.0], &BTreeMap::new(), &BTreeMap::new(), 0);
 
         assert_eq!(summary.persons_replanned, 1);
         assert_eq!(scenario.population.persons[0].selected_plan_index, 1);
@@ -2278,7 +2361,13 @@ mod tests {
         };
 
         let simulation = simulate_traffic(&scenario.population, &scenario.network);
-        let summary = apply_replanning_hook(&mut scenario, &[0.0], &simulation.observed_link_costs, 0);
+        let summary = apply_replanning_hook(
+            &mut scenario,
+            &[0.0],
+            &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            0,
+        );
         let person = &scenario.population.persons[0];
         let PlanElement::Leg(leg) = &person.selected_plan().elements[1] else {
             panic!("expected leg element");
@@ -2391,7 +2480,13 @@ mod tests {
         };
 
         let simulation = simulate_traffic(&scenario.population, &scenario.network);
-        let summary = apply_replanning_hook(&mut scenario, &[0.0, 0.0], &simulation.observed_link_costs, 0);
+        let summary = apply_replanning_hook(
+            &mut scenario,
+            &[0.0, 0.0],
+            &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            0,
+        );
         let person = &scenario.population.persons[0];
         let PlanElement::Leg(leg) = &person.selected_plan().elements[1] else {
             panic!("expected leg element");
@@ -2486,7 +2581,13 @@ mod tests {
         };
 
         let simulation = simulate_traffic(&scenario.population, &scenario.network);
-        let summary = apply_replanning_hook(&mut scenario, &[100.0], &simulation.observed_link_costs, 0);
+        let summary = apply_replanning_hook(
+            &mut scenario,
+            &[100.0],
+            &simulation.observed_link_costs,
+            &simulation.observed_link_time_profiles,
+            0,
+        );
         let person = &scenario.population.persons[0];
 
         assert_eq!(summary.persons_replanned, 1);
