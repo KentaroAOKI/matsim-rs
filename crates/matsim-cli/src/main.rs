@@ -403,7 +403,11 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     let (output, final_state) = run_iterations_with_state(&scenario);
     let output_dir = resolve_output_dir(config_path, &scenario.config.output_directory);
     write_outputs(&output_dir, &output)?;
-    write_node_flowstats(&output_dir.join("node_flowstats.csv"), &output, &scenario.network)?;
+    write_node_flowstats(
+        &output_dir.join("node_flowstats.csv"),
+        &output,
+        &scenario.network,
+    )?;
     write_node_inbound_flowstats(
         &output_dir.join("node_inbound_flowstats.csv"),
         &output,

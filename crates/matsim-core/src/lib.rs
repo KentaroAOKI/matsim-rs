@@ -2140,18 +2140,22 @@ pub fn analyze_node_priorities(output: &RunOutput, network: &Network) -> Vec<Nod
             traversals.sort_by(|left, right| {
                 left.free_speed_exit_time_seconds
                     .total_cmp(&right.free_speed_exit_time_seconds)
-                    .then_with(|| left.queue_exit_time_seconds.total_cmp(&right.queue_exit_time_seconds))
+                    .then_with(|| {
+                        left.queue_exit_time_seconds
+                            .total_cmp(&right.queue_exit_time_seconds)
+                    })
                     .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
             });
             let Some(link) = network.links.get(&inbound_link_id) else {
                 continue;
             };
             let capacity_veh_per_hour = link.capacity_veh_per_hour;
-            let deterministic_priority = if capacity_veh_per_hour.is_finite() && capacity_veh_per_hour > 0.0 {
-                1.0 / capacity_veh_per_hour
-            } else {
-                f64::INFINITY
-            };
+            let deterministic_priority =
+                if capacity_veh_per_hour.is_finite() && capacity_veh_per_hour > 0.0 {
+                    1.0 / capacity_veh_per_hour
+                } else {
+                    f64::INFINITY
+                };
             let first_ready_time_seconds = traversals
                 .first()
                 .map(|traversal| traversal.free_speed_exit_time_seconds)
@@ -2176,7 +2180,10 @@ pub fn analyze_node_priorities(output: &RunOutput, network: &Network) -> Vec<Nod
         left.iteration
             .cmp(&right.iteration)
             .then_with(|| left.node_id.cmp(&right.node_id))
-            .then_with(|| left.deterministic_priority.total_cmp(&right.deterministic_priority))
+            .then_with(|| {
+                left.deterministic_priority
+                    .total_cmp(&right.deterministic_priority)
+            })
             .then_with(|| left.inbound_link_id.cmp(&right.inbound_link_id))
     });
     stats
@@ -2191,7 +2198,10 @@ pub fn analyze_node_batches(output: &RunOutput, network: &Network) -> Vec<NodeBa
                 continue;
             };
             groups
-                .entry((link.to_node_id.clone(), to_millis(traversal.free_speed_exit_time_seconds)))
+                .entry((
+                    link.to_node_id.clone(),
+                    to_millis(traversal.free_speed_exit_time_seconds),
+                ))
                 .or_default()
                 .push(traversal);
         }
@@ -2267,19 +2277,26 @@ pub fn analyze_node_runs(output: &RunOutput, network: &Network) -> Vec<NodeRunSt
                     current_len += 1;
                 } else {
                     if let Some(link_id) = current_link {
-                        runs.entry(link_id.to_string()).or_default().push(current_len);
+                        runs.entry(link_id.to_string())
+                            .or_default()
+                            .push(current_len);
                     }
                     current_link = Some(traversal.link_id.as_str());
                     current_len = 1;
                 }
             }
             if let Some(link_id) = current_link {
-                runs.entry(link_id.to_string()).or_default().push(current_len);
+                runs.entry(link_id.to_string())
+                    .or_default()
+                    .push(current_len);
             }
-            let traversal_counts = traversals.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, traversal| {
-                *acc.entry(traversal.link_id.clone()).or_default() += 1;
-                acc
-            });
+            let traversal_counts =
+                traversals
+                    .iter()
+                    .fold(BTreeMap::<String, usize>::new(), |mut acc, traversal| {
+                        *acc.entry(traversal.link_id.clone()).or_default() += 1;
+                        acc
+                    });
             for (inbound_link_id, run_lengths) in runs {
                 let traversals = *traversal_counts.get(&inbound_link_id).unwrap_or(&0);
                 let max_consecutive_releases = run_lengths.iter().copied().max().unwrap_or(0);
@@ -2308,10 +2325,7 @@ pub fn analyze_node_runs(output: &RunOutput, network: &Network) -> Vec<NodeRunSt
     stats
 }
 
-pub fn analyze_node_step_batches(
-    output: &RunOutput,
-    network: &Network,
-) -> Vec<NodeStepBatchStat> {
+pub fn analyze_node_step_batches(output: &RunOutput, network: &Network) -> Vec<NodeStepBatchStat> {
     let mut stats = Vec::new();
     for iteration in &output.iterations {
         let mut groups = BTreeMap::<(String, i64), Vec<&LinkTraversalStat>>::new();
@@ -3308,115 +3322,31 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
     let mut queue_link_states = BTreeMap::<String, QueueLinkState>::new();
 
     while let Some(pending_leg) = pending.pop() {
-        let person = &population.persons[pending_leg.person_index];
-        let Some(PlanElement::Leg(leg)) = person
-            .selected_plan()
-            .elements
-            .get(pending_leg.plan_element_index)
-        else {
-            continue;
-        };
-        let previous_activity =
-            previous_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
-        let next_activity =
-            next_activity_at(&person.selected_plan(), pending_leg.plan_element_index);
-        let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
-        let leg_order =
-            leg_order_for_element(&person.selected_plan(), pending_leg.plan_element_index);
-
-        if let Some(activity) = previous_activity {
-            events.push(EventRecord {
-                time_seconds: pending_leg.departure_time_s,
-                person_id: person.id.clone(),
-                event_type: format!("act_end:{}", activity.activity_type),
-                link_id: activity.link_id.clone(),
-                leg_index: leg_order,
-            });
-        }
-        events.push(EventRecord {
-            time_seconds: pending_leg.departure_time_s,
-            person_id: person.id.clone(),
-            event_type: "departure".to_string(),
-            link_id: previous_activity.and_then(|activity| activity.link_id.clone()),
-            leg_index: leg_order,
-        });
-
-        let mut current_time_s = pending_leg.departure_time_s;
-        for link_id in route_links {
-            let Some(link) = network.links.get(link_id) else {
-                continue;
-            };
-            events.push(EventRecord {
-                time_seconds: current_time_s,
-                person_id: person.id.clone(),
-                event_type: "link_enter".to_string(),
-                link_id: Some(link_id.to_string()),
-                leg_index: leg_order,
-            });
-            let headway_s =
-                if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
-                    3600.0 / link.capacity_veh_per_hour
-                } else {
-                    0.0
-                };
-            let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
-            let free_speed_exit_s = queue_link_state.ready_to_leave_link(current_time_s, link);
-            let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
-                queue_link_state.cross_node(free_speed_exit_s, headway_s);
-            observation_state.record_link_traversal(
-                &person.id,
-                leg_order,
-                link_id,
-                current_time_s,
-                free_speed_exit_s,
-                exit_time_s,
-                headway_s,
-                buffer_size_before_release,
-                buffer_size_after_release,
-            );
-            events.push(EventRecord {
-                time_seconds: exit_time_s,
-                person_id: person.id.clone(),
-                event_type: "link_leave".to_string(),
-                link_id: Some(link_id.to_string()),
-                leg_index: leg_order,
-            });
-            current_time_s = exit_time_s;
-        }
-
-        let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
-        if let Some(slot) = travel_times[pending_leg.person_index].get_mut(leg_order) {
-            *slot = travel_time_s;
-        }
-        events.push(EventRecord {
-            time_seconds: pending_leg.departure_time_s + travel_time_s,
-            person_id: person.id.clone(),
-            event_type: "arrival".to_string(),
-            link_id: next_activity.and_then(|activity| activity.link_id.clone()),
-            leg_index: leg_order,
-        });
-        if let Some(activity) = next_activity {
-            events.push(EventRecord {
-                time_seconds: pending_leg.departure_time_s + travel_time_s,
-                person_id: person.id.clone(),
-                event_type: format!("act_start:{}", activity.activity_type),
-                link_id: activity.link_id.clone(),
-                leg_index: leg_order,
-            });
-        }
-
-        if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
-            &person.selected_plan(),
-            pending_leg.plan_element_index,
-            pending_leg.departure_time_s + travel_time_s,
+        if let Some(leg_result) = simulate_pending_leg(
+            population,
+            network,
+            &pending_leg,
+            &mut queue_link_states,
+            &mut observation_state,
+            &mut events,
         ) {
-            pending.push(PendingLeg {
-                departure_time_ms: to_millis(next_departure_s),
-                departure_time_s: next_departure_s,
-                person_index: pending_leg.person_index,
-                person_id: person.id.clone(),
-                plan_element_index: next_leg_index,
-            });
+            if let Some(slot) = travel_times[pending_leg.person_index].get_mut(leg_result.leg_order)
+            {
+                *slot = leg_result.travel_time_s;
+            }
+            if let Some((next_leg_index, next_departure_s)) = next_leg_departure(
+                population.persons[pending_leg.person_index].selected_plan(),
+                pending_leg.plan_element_index,
+                leg_result.arrival_time_s,
+            ) {
+                pending.push(PendingLeg {
+                    departure_time_ms: to_millis(next_departure_s),
+                    departure_time_s: next_departure_s,
+                    person_index: pending_leg.person_index,
+                    person_id: population.persons[pending_leg.person_index].id.clone(),
+                    plan_element_index: next_leg_index,
+                });
+            }
         }
     }
 
@@ -3430,6 +3360,120 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         link_traversals,
         events,
     }
+}
+
+struct SimulatedLeg {
+    leg_order: usize,
+    travel_time_s: f64,
+    arrival_time_s: f64,
+}
+
+fn simulate_pending_leg(
+    population: &Population,
+    network: &Network,
+    pending_leg: &PendingLeg,
+    queue_link_states: &mut BTreeMap<String, QueueLinkState>,
+    observation_state: &mut TrafficObservationState,
+    events: &mut Vec<EventRecord>,
+) -> Option<SimulatedLeg> {
+    let person = &population.persons[pending_leg.person_index];
+    let Some(PlanElement::Leg(leg)) = person
+        .selected_plan()
+        .elements
+        .get(pending_leg.plan_element_index)
+    else {
+        return None;
+    };
+    let previous_activity =
+        previous_activity_at(person.selected_plan(), pending_leg.plan_element_index);
+    let next_activity = next_activity_at(person.selected_plan(), pending_leg.plan_element_index);
+    let route_links = route_link_sequence(leg, previous_activity, next_activity, network);
+    let leg_order = leg_order_for_element(person.selected_plan(), pending_leg.plan_element_index);
+
+    if let Some(activity) = previous_activity {
+        events.push(EventRecord {
+            time_seconds: pending_leg.departure_time_s,
+            person_id: person.id.clone(),
+            event_type: format!("act_end:{}", activity.activity_type),
+            link_id: activity.link_id.clone(),
+            leg_index: leg_order,
+        });
+    }
+    events.push(EventRecord {
+        time_seconds: pending_leg.departure_time_s,
+        person_id: person.id.clone(),
+        event_type: "departure".to_string(),
+        link_id: previous_activity.and_then(|activity| activity.link_id.clone()),
+        leg_index: leg_order,
+    });
+
+    let mut current_time_s = pending_leg.departure_time_s;
+    for link_id in route_links {
+        let Some(link) = network.links.get(link_id) else {
+            continue;
+        };
+        events.push(EventRecord {
+            time_seconds: current_time_s,
+            person_id: person.id.clone(),
+            event_type: "link_enter".to_string(),
+            link_id: Some(link_id.to_string()),
+            leg_index: leg_order,
+        });
+        let headway_s =
+            if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
+                3600.0 / link.capacity_veh_per_hour
+            } else {
+                0.0
+            };
+        let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
+        let free_speed_exit_s = queue_link_state.ready_to_leave_link(current_time_s, link);
+        let (exit_time_s, buffer_size_before_release, buffer_size_after_release) =
+            queue_link_state.cross_node(free_speed_exit_s, headway_s);
+        observation_state.record_link_traversal(
+            &person.id,
+            leg_order,
+            link_id,
+            current_time_s,
+            free_speed_exit_s,
+            exit_time_s,
+            headway_s,
+            buffer_size_before_release,
+            buffer_size_after_release,
+        );
+        events.push(EventRecord {
+            time_seconds: exit_time_s,
+            person_id: person.id.clone(),
+            event_type: "link_leave".to_string(),
+            link_id: Some(link_id.to_string()),
+            leg_index: leg_order,
+        });
+        current_time_s = exit_time_s;
+    }
+
+    let travel_time_s = (current_time_s - pending_leg.departure_time_s).max(0.0);
+    let arrival_time_s = pending_leg.departure_time_s + travel_time_s;
+    events.push(EventRecord {
+        time_seconds: arrival_time_s,
+        person_id: person.id.clone(),
+        event_type: "arrival".to_string(),
+        link_id: next_activity.and_then(|activity| activity.link_id.clone()),
+        leg_index: leg_order,
+    });
+    if let Some(activity) = next_activity {
+        events.push(EventRecord {
+            time_seconds: arrival_time_s,
+            person_id: person.id.clone(),
+            event_type: format!("act_start:{}", activity.activity_type),
+            link_id: activity.link_id.clone(),
+            leg_index: leg_order,
+        });
+    }
+
+    Some(SimulatedLeg {
+        leg_order,
+        travel_time_s,
+        arrival_time_s,
+    })
 }
 
 fn first_leg_departure(plan: &Plan) -> Option<(usize, f64)> {
