@@ -149,6 +149,20 @@ pub struct ReplanningSummary {
 }
 
 #[derive(Debug, Clone)]
+struct SimulationState {
+    person_stats: Vec<PersonScoreStats>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PersonScoreStats {
+    last_executed: f64,
+    best: f64,
+    worst: f64,
+    sum: f64,
+    count: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct ModeStat {
     pub mode: String,
     pub share: f64,
@@ -204,12 +218,14 @@ pub enum CoreError {
 use thiserror::Error;
 
 pub fn run_single_iteration(scenario: &Scenario) -> IterationOutput {
-    run_iteration(scenario, 0)
+    let mut state = SimulationState::new(scenario.population.persons.len());
+    run_iteration(scenario, &mut state, 0)
 }
 
 pub fn run_iterations(scenario: &Scenario) -> RunOutput {
+    let mut state = SimulationState::new(scenario.population.persons.len());
     let iterations = (0..=scenario.config.last_iteration)
-        .map(|iteration| run_iteration(scenario, iteration))
+        .map(|iteration| run_iteration(scenario, &mut state, iteration))
         .collect();
 
     RunOutput {
@@ -218,7 +234,24 @@ pub fn run_iterations(scenario: &Scenario) -> RunOutput {
     }
 }
 
-fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
+impl SimulationState {
+    fn new(person_count: usize) -> Self {
+        Self {
+            person_stats: vec![
+                PersonScoreStats {
+                    last_executed: 0.0,
+                    best: f64::NEG_INFINITY,
+                    worst: f64::INFINITY,
+                    sum: 0.0,
+                    count: 0,
+                };
+                person_count
+            ],
+        }
+    }
+}
+
+fn run_iteration(scenario: &Scenario, state: &mut SimulationState, iteration: u32) -> IterationOutput {
     let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
@@ -246,9 +279,10 @@ fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
         total_plan_distance_m += person_distance_m;
     }
 
-    let person_count = scenario.population.persons.len() as f64;
+    let person_count_usize = scenario.population.persons.len();
+    let person_count = person_count_usize as f64;
     let leg_count = total_legs as f64;
-    let total_score: f64 = scenario
+    let executed_scores: Vec<f64> = scenario
         .population
         .persons
         .iter()
@@ -261,9 +295,41 @@ fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
                 leg_times,
             )
         })
-        .sum();
+        .collect();
 
-    let score_avg = if person_count > 0.0 { total_score / person_count } else { 0.0 };
+    for (person_stats, executed_score) in state.person_stats.iter_mut().zip(executed_scores.iter().copied()) {
+        person_stats.last_executed = executed_score;
+        person_stats.best = person_stats.best.max(executed_score);
+        person_stats.worst = person_stats.worst.min(executed_score);
+        person_stats.sum += executed_score;
+        person_stats.count += 1;
+    }
+
+    let avg_executed = if person_count > 0.0 {
+        state.person_stats.iter().map(|stats| stats.last_executed).sum::<f64>() / person_count
+    } else {
+        0.0
+    };
+    let avg_worst = if person_count > 0.0 {
+        state.person_stats.iter().map(|stats| stats.worst).sum::<f64>() / person_count
+    } else {
+        0.0
+    };
+    let avg_average = if person_count > 0.0 {
+        state
+            .person_stats
+            .iter()
+            .map(|stats| stats.sum / stats.count as f64)
+            .sum::<f64>()
+            / person_count
+    } else {
+        0.0
+    };
+    let avg_best = if person_count > 0.0 {
+        state.person_stats.iter().map(|stats| stats.best).sum::<f64>() / person_count
+    } else {
+        0.0
+    };
 
     let mode_stats = mode_counts
         .into_iter()
@@ -281,10 +347,10 @@ fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
     };
 
     let score_stats = ScoreStats {
-        avg_executed: score_avg,
-        avg_worst: score_avg,
-        avg_average: score_avg,
-        avg_best: score_avg,
+        avg_executed,
+        avg_worst,
+        avg_average,
+        avg_best,
     };
     let replanning_summary = apply_replanning_hook(scenario, iteration);
 
