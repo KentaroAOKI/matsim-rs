@@ -247,6 +247,7 @@ pub struct LinkProfileStat {
     pub link_id: String,
     pub hour_bucket: u32,
     pub travel_time_seconds: f64,
+    pub delay_seconds: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -535,10 +536,17 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         .observed_link_time_profiles
         .iter()
         .flat_map(|(link_id, profile)| {
-            profile.iter().map(|(hour_bucket, travel_time_seconds)| LinkProfileStat {
+            let free_speed_time_seconds = scenario
+                .network
+                .links
+                .get(link_id)
+                .map(|link| link.length_m / link.freespeed_mps)
+                .unwrap_or(0.0);
+            profile.iter().map(move |(hour_bucket, travel_time_seconds)| LinkProfileStat {
                 link_id: link_id.clone(),
                 hour_bucket: *hour_bucket,
                 travel_time_seconds: *travel_time_seconds,
+                delay_seconds: (*travel_time_seconds - free_speed_time_seconds).max(0.0),
             })
         })
         .collect();
@@ -1325,14 +1333,14 @@ fn write_observed_link_costs(path: &Path, output: &RunOutput) -> Result<(), Core
 
 fn write_observed_link_profiles(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
-    writeln!(writer, "iteration;link_id;hour_bucket;travel_time_seconds")
+    writeln!(writer, "iteration;link_id;hour_bucket;travel_time_seconds;delay_seconds")
         .map_err(|source| write_error(path, source))?;
     for iteration in &output.iterations {
         for stat in &iteration.observed_link_profiles {
             writeln!(
                 writer,
-                "{};{};{};{:.6}",
-                iteration.iteration, stat.link_id, stat.hour_bucket, stat.travel_time_seconds
+                "{};{};{};{:.6};{:.6}",
+                iteration.iteration, stat.link_id, stat.hour_bucket, stat.travel_time_seconds, stat.delay_seconds
             )
             .map_err(|source| write_error(path, source))?;
         }
