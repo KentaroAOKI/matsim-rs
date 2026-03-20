@@ -3496,8 +3496,13 @@ fn simulate_link_traversal(
         .link_states
         .entry(link_id.to_string())
         .or_default();
+    let queue_node_state = queue_state
+        .node_states
+        .entry(link.to_node_id.clone())
+        .or_default();
+    queue_node_state.register_inbound_link(link_id);
     let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
-    let crossing = queue_link_state.cross_node(&ready_to_leave);
+    let crossing = queue_link_state.cross_node(&ready_to_leave, queue_node_state);
     SimulatedLinkTraversal {
         exit_time_s: crossing.exit_time_s,
         free_speed_exit_s: ready_to_leave.free_speed_exit_s,
@@ -3634,6 +3639,12 @@ struct QueueLinkState {
 #[derive(Debug, Default)]
 struct QueueSimulationState {
     link_states: BTreeMap<String, QueueLinkState>,
+    node_states: BTreeMap<String, QueueNodeState>,
+}
+
+#[derive(Debug, Default)]
+struct QueueNodeState {
+    offering_buffer_state: NodeOfferingBufferState,
 }
 
 #[derive(Debug, Default)]
@@ -3652,6 +3663,11 @@ struct NodeBufferState {
     pending_releases: VecDeque<f64>,
 }
 
+#[derive(Debug, Default)]
+struct NodeOfferingBufferState {
+    pending_inbound_links: VecDeque<String>,
+}
+
 impl QueueLinkState {
     fn ready_to_leave_link(&self, enter_time_s: f64, link: &Link) -> LinkReadyToLeave {
         let headway_s =
@@ -3666,9 +3682,14 @@ impl QueueLinkState {
         }
     }
 
-    fn cross_node(&mut self, ready_to_leave: &LinkReadyToLeave) -> NodeCrossingResult {
+    fn cross_node(
+        &mut self,
+        ready_to_leave: &LinkReadyToLeave,
+        queue_node_state: &mut QueueNodeState,
+    ) -> NodeCrossingResult {
         self.node_flow_state
             .enter_buffer(ready_to_leave.free_speed_exit_s);
+        queue_node_state.note_ready_vehicle();
         let (exit_time_s, buffer_size_before_release, buffer_size_after_release) = self
             .node_flow_state
             .release_from_buffer(ready_to_leave.headway_s);
@@ -3677,6 +3698,16 @@ impl QueueLinkState {
             buffer_size_before_release,
             buffer_size_after_release,
         }
+    }
+}
+
+impl QueueNodeState {
+    fn register_inbound_link(&mut self, link_id: &str) {
+        self.offering_buffer_state.register_inbound_link(link_id);
+    }
+
+    fn note_ready_vehicle(&mut self) {
+        self.offering_buffer_state.note_ready_vehicle();
     }
 }
 
@@ -3722,6 +3753,24 @@ impl NodeBufferState {
             .is_some_and(|scheduled_release| scheduled_release <= time_s)
         {
             self.pending_releases.pop_front();
+        }
+    }
+}
+
+impl NodeOfferingBufferState {
+    fn register_inbound_link(&mut self, link_id: &str) {
+        if self
+            .pending_inbound_links
+            .iter()
+            .all(|pending_link_id| pending_link_id != link_id)
+        {
+            self.pending_inbound_links.push_back(link_id.to_string());
+        }
+    }
+
+    fn note_ready_vehicle(&mut self) {
+        if let Some(inbound_link_id) = self.pending_inbound_links.pop_front() {
+            self.pending_inbound_links.push_back(inbound_link_id);
         }
     }
 }
