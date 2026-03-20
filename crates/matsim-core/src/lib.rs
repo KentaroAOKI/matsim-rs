@@ -424,6 +424,18 @@ pub struct NodeStepBatchStat {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeSelectorPreviewStat {
+    pub iteration: u32,
+    pub node_id: String,
+    pub sim_step: i64,
+    pub selected_inbound_link_id: String,
+    pub selected_traversals: usize,
+    pub actual_first_inbound_link_id: String,
+    pub actual_first_run_length: usize,
+    pub inbound_links: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersonScoreBreakdown {
     pub person_id: String,
     pub total_score: f64,
@@ -1582,6 +1594,35 @@ pub fn write_node_step_batchstats(
     Ok(())
 }
 
+pub fn write_node_selector_previewstats(
+    path: &Path,
+    output: &RunOutput,
+    network: &Network,
+) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;node_id;sim_step;selected_inbound_link_id;selected_traversals;actual_first_inbound_link_id;actual_first_run_length;inbound_links"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for stat in analyze_node_selector_preview(output, network) {
+        writeln!(
+            writer,
+            "{};{};{};{};{};{};{};{}",
+            stat.iteration,
+            stat.node_id,
+            stat.sim_step,
+            stat.selected_inbound_link_id,
+            stat.selected_traversals,
+            stat.actual_first_inbound_link_id,
+            stat.actual_first_run_length,
+            stat.inbound_links
+        )
+        .map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
 pub fn explain_person_score(scenario: &Scenario, person_id: &str) -> Option<PersonScoreBreakdown> {
     let person = scenario
         .population
@@ -2274,6 +2315,100 @@ pub fn analyze_node_step_batches(
                 release_pattern: release_links.join("|"),
                 switches,
                 group_size: traversals.len(),
+            });
+        }
+    }
+    stats.sort_by(|left, right| {
+        left.iteration
+            .cmp(&right.iteration)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+            .then_with(|| left.sim_step.cmp(&right.sim_step))
+    });
+    stats
+}
+
+pub fn analyze_node_selector_preview(
+    output: &RunOutput,
+    network: &Network,
+) -> Vec<NodeSelectorPreviewStat> {
+    let mut stats = Vec::new();
+    for iteration in &output.iterations {
+        let mut groups = BTreeMap::<(String, i64), Vec<&LinkTraversalStat>>::new();
+        for traversal in &iteration.link_traversals {
+            let Some(link) = network.links.get(&traversal.link_id) else {
+                continue;
+            };
+            let sim_step = traversal.free_speed_exit_time_seconds.floor() as i64;
+            groups
+                .entry((link.to_node_id.clone(), sim_step))
+                .or_default()
+                .push(traversal);
+        }
+        for ((node_id, sim_step), mut traversals) in groups {
+            let unique_links = traversals
+                .iter()
+                .map(|traversal| traversal.link_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique_links.len() < 2 {
+                continue;
+            }
+            let mut per_link = BTreeMap::<String, usize>::new();
+            for traversal in &traversals {
+                *per_link.entry(traversal.link_id.clone()).or_default() += 1;
+            }
+            let selected_inbound_link_id = per_link
+                .keys()
+                .min_by(|left, right| {
+                    let left_cap = network
+                        .links
+                        .get(left.as_str())
+                        .map(|link| link.capacity_veh_per_hour)
+                        .unwrap_or(f64::INFINITY);
+                    let right_cap = network
+                        .links
+                        .get(right.as_str())
+                        .map(|link| link.capacity_veh_per_hour)
+                        .unwrap_or(f64::INFINITY);
+                    let left_prio = if left_cap.is_finite() && left_cap > 0.0 {
+                        1.0 / left_cap
+                    } else {
+                        f64::INFINITY
+                    };
+                    let right_prio = if right_cap.is_finite() && right_cap > 0.0 {
+                        1.0 / right_cap
+                    } else {
+                        f64::INFINITY
+                    };
+                    left_prio
+                        .total_cmp(&right_prio)
+                        .then_with(|| left.cmp(right))
+                })
+                .cloned()
+                .unwrap_or_default();
+            traversals.sort_by(|left, right| {
+                left.queue_exit_time_seconds
+                    .total_cmp(&right.queue_exit_time_seconds)
+                    .then_with(|| left.link_id.cmp(&right.link_id))
+                    .then_with(|| left.same_enter_rank.cmp(&right.same_enter_rank))
+                    .then_with(|| compare_person_ids(&left.person_id, &right.person_id))
+            });
+            let actual_first_inbound_link_id = traversals
+                .first()
+                .map(|traversal| traversal.link_id.clone())
+                .unwrap_or_default();
+            let actual_first_run_length = traversals
+                .iter()
+                .take_while(|traversal| traversal.link_id == actual_first_inbound_link_id)
+                .count();
+            stats.push(NodeSelectorPreviewStat {
+                iteration: iteration.iteration,
+                node_id,
+                sim_step,
+                selected_inbound_link_id: selected_inbound_link_id.clone(),
+                selected_traversals: *per_link.get(&selected_inbound_link_id).unwrap_or(&0),
+                actual_first_inbound_link_id,
+                actual_first_run_length,
+                inbound_links: unique_links.into_iter().collect::<Vec<_>>().join("|"),
             });
         }
     }
