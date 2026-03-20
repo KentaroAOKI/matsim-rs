@@ -3402,9 +3402,16 @@ struct PendingNodeOffer {
     headway_s: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct NodeOfferSnapshot {
     offers_by_inbound: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct NodeStepOfferBatch {
+    to_node_id: String,
+    sim_step: i64,
+    offer_snapshot: NodeOfferSnapshot,
 }
 
 fn simulate_pending_leg(
@@ -3526,10 +3533,19 @@ fn simulate_link_traversal(
         to_node_id: link.to_node_id.clone(),
         headway_s: ready_to_leave.headway_s,
     });
-    let offer_snapshot = queue_state.snapshot_node_offers(
-        &link.to_node_id,
-        ready_to_leave.free_speed_exit_s.floor() as i64,
-    );
+    let offer_snapshot = queue_state
+        .first_pending_node_step_batch()
+        .filter(|batch| {
+            batch.to_node_id == link.to_node_id
+                && batch.sim_step == ready_to_leave.free_speed_exit_s.floor() as i64
+        })
+        .map(|batch| batch.offer_snapshot)
+        .unwrap_or_else(|| {
+            queue_state.snapshot_node_offers(
+                &link.to_node_id,
+                ready_to_leave.free_speed_exit_s.floor() as i64,
+            )
+        });
     let decision = {
         let queue_node_state = queue_state
             .node_states
@@ -3810,6 +3826,16 @@ impl QueueSimulationState {
             }
         }
         snapshot
+    }
+
+    fn first_pending_node_step_batch(&self) -> Option<NodeStepOfferBatch> {
+        let first_offer = self.pending_node_offers.front()?;
+        Some(NodeStepOfferBatch {
+            to_node_id: first_offer.to_node_id.clone(),
+            sim_step: first_offer.sim_step,
+            offer_snapshot: self
+                .snapshot_node_offers(&first_offer.to_node_id, first_offer.sim_step),
+        })
     }
 }
 
