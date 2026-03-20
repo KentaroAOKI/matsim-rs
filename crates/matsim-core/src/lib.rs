@@ -1110,4 +1110,47 @@ mod tests {
 
         assert_eq!(leg_distance_m(&leg, Some(&previous), Some(&next), &network), 0.0);
     }
+
+    #[test]
+    fn best_score_replanning_selects_highest_scored_plan() {
+        let mut scenario = Scenario {
+            config: MatsimConfig {
+                random_seed: 1,
+                network_path: String::new(),
+                plans_path: String::new(),
+                output_directory: String::new(),
+                last_iteration: 1,
+                scoring: ScoringConfig::default(),
+                replanning: ReplanningConfig {
+                    strategies: vec![StrategySetting {
+                        name: "BestScore".to_string(),
+                        weight: 1.0,
+                    }],
+                },
+            },
+            network: Network::default(),
+            population: Population {
+                persons: vec![Person {
+                    id: "1".to_string(),
+                    plans: vec![
+                        Plan {
+                            score: Some(1.0),
+                            elements: Vec::new(),
+                        },
+                        Plan {
+                            score: Some(5.0),
+                            elements: Vec::new(),
+                        },
+                    ],
+                    selected_plan_index: 0,
+                }],
+            },
+        };
+
+        let summary = apply_replanning_hook(&mut scenario, &[1.0], 0);
+
+        assert_eq!(summary.persons_replanned, 1);
+        assert_eq!(scenario.population.persons[0].selected_plan_index, 1);
+        assert_eq!(scenario.population.persons[0].plans[0].score, Some(1.0));
+    }
 }

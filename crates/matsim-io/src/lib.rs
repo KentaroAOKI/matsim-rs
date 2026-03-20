@@ -318,7 +318,12 @@ pub fn load_population(path: &Path) -> Result<Population, IoError> {
                 }
             }
             Event::Start(ref e) if e.name().as_ref() == b"plan" => {
-                current_plan = Some(Plan::default());
+                let mut plan = Plan::default();
+                plan.score = attr_string(path, e, b"score")?
+                    .as_deref()
+                    .map(|value| parse_f64(path, value))
+                    .transpose()?;
+                current_plan = Some(plan);
                 current_plan_selected = attr_string(path, e, b"selected")?
                     .map(|value| value.eq_ignore_ascii_case("yes"))
                     .unwrap_or(false);
@@ -525,6 +530,7 @@ mod tests {
         let first_person = &population.persons[0];
         assert_eq!(first_person.selected_plan_index, 0);
         assert_eq!(first_person.plans.len(), 1);
+        assert_eq!(first_person.plans[0].score, None);
         let first_leg = first_person
             .selected_plan()
             .elements
