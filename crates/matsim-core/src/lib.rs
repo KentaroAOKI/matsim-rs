@@ -3319,14 +3319,14 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
         }
     }
 
-    let mut queue_link_states = BTreeMap::<String, QueueLinkState>::new();
+    let mut queue_state = QueueSimulationState::default();
 
     while let Some(pending_leg) = pending.pop() {
         if let Some(leg_result) = simulate_pending_leg(
             population,
             network,
             &pending_leg,
-            &mut queue_link_states,
+            &mut queue_state,
             &mut observation_state,
             &mut events,
         ) {
@@ -3391,7 +3391,7 @@ fn simulate_pending_leg(
     population: &Population,
     network: &Network,
     pending_leg: &PendingLeg,
-    queue_link_states: &mut BTreeMap<String, QueueLinkState>,
+    queue_state: &mut QueueSimulationState,
     observation_state: &mut TrafficObservationState,
     events: &mut Vec<EventRecord>,
 ) -> Option<SimulatedLeg> {
@@ -3438,7 +3438,7 @@ fn simulate_pending_leg(
             link_id: Some(link_id.to_string()),
             leg_index: leg_order,
         });
-        let traversal = simulate_link_traversal(queue_link_states, link_id, link, current_time_s);
+        let traversal = simulate_link_traversal(queue_state, link_id, link, current_time_s);
         observation_state.record_link_traversal(
             &person.id,
             leg_order,
@@ -3487,12 +3487,15 @@ fn simulate_pending_leg(
 }
 
 fn simulate_link_traversal(
-    queue_link_states: &mut BTreeMap<String, QueueLinkState>,
+    queue_state: &mut QueueSimulationState,
     link_id: &str,
     link: &Link,
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
-    let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
+    let queue_link_state = queue_state
+        .link_states
+        .entry(link_id.to_string())
+        .or_default();
     let ready_to_leave = queue_link_state.ready_to_leave_link(enter_time_s, link);
     let crossing = queue_link_state.cross_node(&ready_to_leave);
     SimulatedLinkTraversal {
@@ -3626,6 +3629,11 @@ struct PendingLeg {
 #[derive(Debug, Default)]
 struct QueueLinkState {
     node_flow_state: NodeFlowState,
+}
+
+#[derive(Debug, Default)]
+struct QueueSimulationState {
+    link_states: BTreeMap<String, QueueLinkState>,
 }
 
 #[derive(Debug, Default)]
