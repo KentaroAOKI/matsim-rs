@@ -1,0 +1,351 @@
+use std::borrow::Cow;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
+
+use flate2::read::GzDecoder;
+use matsim_core::{
+    Activity, Leg, Link, MatsimConfig, Network, Person, Plan, PlanElement, Population, Scenario,
+};
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum IoError {
+    #[error("failed to open {path}: {source}")]
+    OpenFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to read xml {path}: {source}")]
+    ReadXml {
+        path: String,
+        #[source]
+        source: quick_xml::Error,
+    },
+    #[error("missing required config value: {0}")]
+    MissingConfig(&'static str),
+    #[error("invalid utf-8 in {path}: {source}")]
+    InvalidUtf8 {
+        path: String,
+        #[source]
+        source: std::str::Utf8Error,
+    },
+    #[error("invalid float `{value}` in {path}")]
+    InvalidFloat { path: String, value: String },
+}
+
+pub fn load_scenario(config_path: &Path) -> Result<Scenario, IoError> {
+    let config = load_config(config_path)?;
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let network_path = resolve_input_path(config_dir, &config.network_path);
+    let plans_path = resolve_input_path(config_dir, &config.plans_path);
+
+    Ok(Scenario {
+        network: load_network(&network_path)?,
+        population: load_population(&plans_path)?,
+        config: MatsimConfig {
+            network_path: network_path.display().to_string(),
+            plans_path: plans_path.display().to_string(),
+            ..config
+        },
+    })
+}
+
+pub fn load_config(path: &Path) -> Result<MatsimConfig, IoError> {
+    let mut reader = xml_reader(path)?;
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+
+    let mut current_module: Option<String> = None;
+    let mut random_seed: Option<u64> = None;
+    let mut network_path: Option<String> = None;
+    let mut plans_path: Option<String> = None;
+    let mut output_directory: Option<String> = None;
+    let mut last_iteration = 0_u32;
+    let mut performing_utils_per_hour = 0.0_f64;
+
+    loop {
+        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
+            path: path.display().to_string(),
+            source,
+        })? {
+            Event::Start(ref e) if e.name().as_ref() == b"module" => {
+                current_module = attr_string(path, e, b"name")?;
+            }
+            Event::End(ref e) if e.name().as_ref() == b"module" => {
+                current_module = None;
+            }
+            Event::Empty(ref e) if e.name().as_ref() == b"param" => {
+                let name = attr_string(path, e, b"name")?.unwrap_or_default();
+                let value = attr_string(path, e, b"value")?.unwrap_or_default();
+                match current_module.as_deref() {
+                    Some("global") if name == "randomSeed" => {
+                        random_seed = value.parse::<u64>().ok();
+                    }
+                    Some("network") if name == "inputNetworkFile" => network_path = Some(value),
+                    Some("plans") if name == "inputPlansFile" => plans_path = Some(value),
+                    Some("controller") if name == "outputDirectory" => output_directory = Some(value),
+                    Some("controller") if name == "lastIteration" => {
+                        last_iteration = value.parse::<u32>().unwrap_or(0);
+                    }
+                    Some("scoring") if name == "performing" => {
+                        performing_utils_per_hour = parse_scoring_value(path, &value)?;
+                    }
+                    _ => {}
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(MatsimConfig {
+        random_seed: random_seed.unwrap_or(0),
+        network_path: network_path.ok_or(IoError::MissingConfig("network.inputNetworkFile"))?,
+        plans_path: plans_path.ok_or(IoError::MissingConfig("plans.inputPlansFile"))?,
+        output_directory: output_directory.unwrap_or_else(|| "./output-rust".to_string()),
+        last_iteration,
+        performing_utils_per_hour,
+    })
+}
+
+pub fn load_network(path: &Path) -> Result<Network, IoError> {
+    let mut reader = xml_reader(path)?;
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut network = Network::default();
+
+    loop {
+        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
+            path: path.display().to_string(),
+            source,
+        })? {
+            Event::Empty(ref e) if e.name().as_ref() == b"link" => {
+                let id = attr_string(path, e, b"id")?.unwrap_or_default();
+                let length_m = attr_string(path, e, b"length")?
+                    .as_deref()
+                    .map(|value| parse_f64(path, value))
+                    .transpose()?
+                    .unwrap_or(0.0);
+
+                network.links.insert(
+                    id.clone(),
+                    Link {
+                        id,
+                        length_m,
+                    },
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(network)
+}
+
+pub fn load_population(path: &Path) -> Result<Population, IoError> {
+    let mut reader = xml_reader(path)?;
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+
+    let mut population = Population::default();
+    let mut current_person_id: Option<String> = None;
+    let mut current_plan: Option<Plan> = None;
+    let mut current_plan_selected = false;
+    let mut fallback_plan: Option<Plan> = None;
+    let mut selected_plan: Option<Plan> = None;
+    let mut inside_route = false;
+    let mut route_buffer = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf).map_err(|source| IoError::ReadXml {
+            path: path.display().to_string(),
+            source,
+        })? {
+            Event::Start(ref e) if e.name().as_ref() == b"person" => {
+                current_person_id = attr_string(path, e, b"id")?;
+                selected_plan = None;
+                fallback_plan = None;
+            }
+            Event::End(ref e) if e.name().as_ref() == b"person" => {
+                if let Some(person_id) = current_person_id.take() {
+                    let plan = selected_plan.take().or_else(|| fallback_plan.take()).unwrap_or_default();
+                    population.persons.push(Person {
+                        id: person_id,
+                        selected_plan: plan,
+                    });
+                }
+            }
+            Event::Start(ref e) if e.name().as_ref() == b"plan" => {
+                current_plan = Some(Plan::default());
+                current_plan_selected = attr_string(path, e, b"selected")?
+                    .map(|value| value.eq_ignore_ascii_case("yes"))
+                    .unwrap_or(false);
+            }
+            Event::End(ref e) if e.name().as_ref() == b"plan" => {
+                if let Some(plan) = current_plan.take() {
+                    if current_plan_selected {
+                        selected_plan = Some(plan);
+                    } else if fallback_plan.is_none() {
+                        fallback_plan = Some(plan);
+                    }
+                }
+                current_plan_selected = false;
+            }
+            Event::Empty(ref e) if e.name().as_ref() == b"act" => {
+                if let Some(plan) = current_plan.as_mut() {
+                    plan.elements.push(PlanElement::Activity(parse_activity(path, e)?));
+                }
+            }
+            Event::Start(ref e) if e.name().as_ref() == b"leg" => {
+                if let Some(plan) = current_plan.as_mut() {
+                    plan.elements.push(PlanElement::Leg(Leg {
+                        mode: attr_string(path, e, b"mode")?.unwrap_or_else(|| "unknown".to_string()),
+                        route_link_ids: Vec::new(),
+                    }));
+                }
+            }
+            Event::Start(ref e) if e.name().as_ref() == b"route" => {
+                inside_route = true;
+                route_buffer.clear();
+            }
+            Event::Text(text) if inside_route => {
+                route_buffer.push_str(&decode_text(path, text.as_ref())?);
+            }
+            Event::End(ref e) if e.name().as_ref() == b"route" => {
+                inside_route = false;
+                if let Some(plan) = current_plan.as_mut() {
+                    if let Some(PlanElement::Leg(leg)) = plan.elements.last_mut() {
+                        leg.route_link_ids = route_buffer
+                            .split_whitespace()
+                            .map(|id| id.to_string())
+                            .collect();
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(population)
+}
+
+fn parse_activity(path: &Path, e: &BytesStart<'_>) -> Result<Activity, IoError> {
+    Ok(Activity {
+        activity_type: attr_string(path, e, b"type")?.unwrap_or_else(|| "unknown".to_string()),
+        link_id: attr_string(path, e, b"link")?,
+        end_time_seconds: attr_string(path, e, b"end_time")?
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        duration_seconds: attr_string(path, e, b"dur")?
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+    })
+}
+
+fn resolve_input_path(base_dir: &Path, value: &str) -> PathBuf {
+    let candidate = Path::new(value);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base_dir.join(candidate)
+    }
+}
+
+fn xml_reader(path: &Path) -> Result<Reader<BufReader<Box<dyn Read>>>, IoError> {
+    let file = File::open(path).map_err(|source| IoError::OpenFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let boxed: Box<dyn Read> = if path.extension().and_then(|ext| ext.to_str()) == Some("gz") {
+        Box::new(GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+
+    Ok(Reader::from_reader(BufReader::new(boxed)))
+}
+
+fn attr_string(path: &Path, event: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, IoError> {
+    for attr in event.attributes().flatten() {
+        if attr.key.as_ref() == key {
+            let value = std::str::from_utf8(attr.value.as_ref()).map_err(|source| IoError::InvalidUtf8 {
+                path: path.display().to_string(),
+                source,
+            })?;
+            return Ok(Some(value.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn decode_text(path: &Path, bytes: &[u8]) -> Result<String, IoError> {
+    let text = std::str::from_utf8(bytes).map_err(|source| IoError::InvalidUtf8 {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(match quick_xml::escape::unescape(text).map_err(|source| IoError::ReadXml {
+        path: path.display().to_string(),
+        source: quick_xml::Error::Escape(source),
+    })? {
+        Cow::Borrowed(value) => value.to_string(),
+        Cow::Owned(value) => value,
+    })
+}
+
+fn parse_scoring_value(path: &Path, value: &str) -> Result<f64, IoError> {
+    parse_f64(path, value.trim_start_matches('+'))
+}
+
+fn parse_f64(path: &Path, value: &str) -> Result<f64, IoError> {
+    value.parse::<f64>().map_err(|_| IoError::InvalidFloat {
+        path: path.display().to_string(),
+        value: value.to_string(),
+    })
+}
+
+fn parse_time(value: &str) -> Result<f64, IoError> {
+    let parts: Result<Vec<f64>, IoError> = value
+        .split(':')
+        .map(|part| {
+            part.parse::<f64>().map_err(|_| IoError::InvalidFloat {
+                path: "<time>".to_string(),
+                value: value.to_string(),
+            })
+        })
+        .collect();
+    let parts = parts?;
+
+    Ok(match parts.as_slice() {
+        [hours, minutes, seconds] => hours * 3600.0 + minutes * 60.0 + seconds,
+        [hours, minutes] => hours * 3600.0 + minutes * 60.0,
+        [seconds] => *seconds,
+        _ => {
+            return Err(IoError::InvalidFloat {
+                path: "<time>".to_string(),
+                value: value.to_string(),
+            })
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hh_mm_ss_time() {
+        assert_eq!(parse_time("06:00:30").unwrap(), 21_630.0);
+        assert_eq!(parse_time("00:10").unwrap(), 600.0);
+    }
+}

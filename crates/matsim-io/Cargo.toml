@@ -1,0 +1,12 @@
+[package]
+name = "matsim-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+matsim-core = { path = "../matsim-core" }
+
