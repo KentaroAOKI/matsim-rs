@@ -3428,6 +3428,10 @@ struct PreparedLinkOffer {
     ready_to_leave: LinkReadyToLeave,
 }
 
+struct ProcessedNodeStepBatch {
+    crossing: NodeCrossingResult,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3534,14 +3538,17 @@ fn simulate_link_traversal(
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
     let prepared_offer = queue_state.prepare_link_offer(link_id, link, enter_time_s);
-    let drained_crossing =
-        queue_state.drain_node_crossing(link_id, &link.to_node_id, &prepared_offer.ready_to_leave);
+    let processed_batch = queue_state.process_node_step_batch(
+        link_id,
+        &link.to_node_id,
+        &prepared_offer.ready_to_leave,
+    );
     SimulatedLinkTraversal {
-        exit_time_s: drained_crossing.crossing.exit_time_s,
+        exit_time_s: processed_batch.crossing.exit_time_s,
         free_speed_exit_s: prepared_offer.ready_to_leave.free_speed_exit_s,
         headway_s: prepared_offer.ready_to_leave.headway_s,
-        buffer_size_before_release: drained_crossing.crossing.buffer_size_before_release,
-        buffer_size_after_release: drained_crossing.crossing.buffer_size_after_release,
+        buffer_size_before_release: processed_batch.crossing.buffer_size_before_release,
+        buffer_size_after_release: processed_batch.crossing.buffer_size_after_release,
     }
 }
 
@@ -3908,6 +3915,19 @@ impl QueueSimulationState {
             queue_node_state.finish_crossing(prepared_crossing.decision.clone());
         }
         DrainedNodeCrossing { crossing }
+    }
+
+    fn process_node_step_batch(
+        &mut self,
+        inbound_link_id: &str,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> ProcessedNodeStepBatch {
+        let drained_crossing =
+            self.drain_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
+        ProcessedNodeStepBatch {
+            crossing: drained_crossing.crossing,
+        }
     }
 }
 
