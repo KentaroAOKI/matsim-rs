@@ -491,7 +491,9 @@ fn parse_time(value: &str) -> Result<f64, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matsim_core::{explain_person_plans, explain_person_reroute, run_iterations, run_iterations_with_state};
+    use matsim_core::{
+        explain_person_plans, explain_person_reroute, explain_person_score, run_iterations, run_iterations_with_state,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -629,6 +631,20 @@ mod tests {
             explanation.legs[0].current_cost_seconds,
             explanation.legs[0].rerouted_cost_seconds
         );
+    }
+
+    #[test]
+    fn explains_score_after_iteration_uses_updated_state() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/reroute/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let initial = explain_person_score(&scenario, "1").unwrap();
+        let (_, final_state) = run_iterations_with_state(&scenario);
+        let after = explain_person_score(&final_state, "1").unwrap();
+
+        assert!(after.total_score > initial.total_score);
     }
 
     #[test]
