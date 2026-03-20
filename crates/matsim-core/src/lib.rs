@@ -2386,17 +2386,15 @@ fn simulate_traffic(population: &Population, network: &Network) -> SimulationSna
                 link_id: Some(link_id.to_string()),
                 leg_index: leg_order,
             });
-            let free_speed_exit_s = current_time_s + link.length_m / link.freespeed_mps;
             let headway_s =
                 if link.capacity_veh_per_hour.is_finite() && link.capacity_veh_per_hour > 0.0 {
                     3600.0 / link.capacity_veh_per_hour
                 } else {
                     0.0
                 };
-            let exit_time_s = queue_link_states
-                .entry(link_id.to_string())
-                .or_default()
-                .schedule_exit(free_speed_exit_s, headway_s);
+            let queue_link_state = queue_link_states.entry(link_id.to_string()).or_default();
+            let free_speed_exit_s = queue_link_state.ready_to_leave_link(current_time_s, link);
+            let exit_time_s = queue_link_state.cross_node(free_speed_exit_s, headway_s);
             observation_state.record_link_traversal(
                 &person.id,
                 leg_order,
@@ -2585,13 +2583,17 @@ struct PendingLeg {
 
 #[derive(Debug, Default)]
 struct QueueLinkState {
-    next_exit_time_s: f64,
+    next_node_release_time_s: f64,
 }
 
 impl QueueLinkState {
-    fn schedule_exit(&mut self, free_speed_exit_s: f64, headway_s: f64) -> f64 {
-        let exit_time_s = free_speed_exit_s.max(self.next_exit_time_s);
-        self.next_exit_time_s = exit_time_s + headway_s;
+    fn ready_to_leave_link(&self, enter_time_s: f64, link: &Link) -> f64 {
+        enter_time_s + link.length_m / link.freespeed_mps
+    }
+
+    fn cross_node(&mut self, ready_to_leave_link_s: f64, headway_s: f64) -> f64 {
+        let exit_time_s = ready_to_leave_link_s.max(self.next_node_release_time_s);
+        self.next_node_release_time_s = exit_time_s + headway_s;
         exit_time_s
     }
 }
