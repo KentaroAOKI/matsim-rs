@@ -3432,6 +3432,16 @@ struct ProcessedNodeStepBatch {
     crossing: NodeCrossingResult,
 }
 
+struct PendingLinkTraversal {
+    inbound_link_id: String,
+    to_node_id: String,
+    ready_to_leave: LinkReadyToLeave,
+}
+
+struct CompletedLinkTraversal {
+    crossing: NodeCrossingResult,
+}
+
 struct ProcessedSingleNodeOffer {
     crossing: NodeCrossingResult,
 }
@@ -3581,18 +3591,14 @@ fn simulate_link_traversal(
     link: &Link,
     enter_time_s: f64,
 ) -> SimulatedLinkTraversal {
-    let prepared_offer = queue_state.prepare_link_offer(link_id, link, enter_time_s);
-    let processed_batch = queue_state.process_node_step_batch(
-        link_id,
-        &link.to_node_id,
-        &prepared_offer.ready_to_leave,
-    );
+    let pending_traversal = queue_state.prepare_pending_link_traversal(link_id, link, enter_time_s);
+    let completed_traversal = queue_state.complete_pending_link_traversal(&pending_traversal);
     SimulatedLinkTraversal {
-        exit_time_s: processed_batch.crossing.exit_time_s,
-        free_speed_exit_s: prepared_offer.ready_to_leave.free_speed_exit_s,
-        headway_s: prepared_offer.ready_to_leave.headway_s,
-        buffer_size_before_release: processed_batch.crossing.buffer_size_before_release,
-        buffer_size_after_release: processed_batch.crossing.buffer_size_after_release,
+        exit_time_s: completed_traversal.crossing.exit_time_s,
+        free_speed_exit_s: pending_traversal.ready_to_leave.free_speed_exit_s,
+        headway_s: pending_traversal.ready_to_leave.headway_s,
+        buffer_size_before_release: completed_traversal.crossing.buffer_size_before_release,
+        buffer_size_after_release: completed_traversal.crossing.buffer_size_after_release,
     }
 }
 
@@ -3814,6 +3820,34 @@ impl QueueLinkState {
 }
 
 impl QueueSimulationState {
+    fn prepare_pending_link_traversal(
+        &mut self,
+        inbound_link_id: &str,
+        link: &Link,
+        enter_time_s: f64,
+    ) -> PendingLinkTraversal {
+        let prepared_offer = self.prepare_link_offer(inbound_link_id, link, enter_time_s);
+        PendingLinkTraversal {
+            inbound_link_id: inbound_link_id.to_string(),
+            to_node_id: link.to_node_id.clone(),
+            ready_to_leave: prepared_offer.ready_to_leave,
+        }
+    }
+
+    fn complete_pending_link_traversal(
+        &mut self,
+        pending_traversal: &PendingLinkTraversal,
+    ) -> CompletedLinkTraversal {
+        let processed_batch = self.process_node_step_batch(
+            &pending_traversal.inbound_link_id,
+            &pending_traversal.to_node_id,
+            &pending_traversal.ready_to_leave,
+        );
+        CompletedLinkTraversal {
+            crossing: processed_batch.crossing,
+        }
+    }
+
     fn prepare_link_offer(
         &mut self,
         inbound_link_id: &str,
