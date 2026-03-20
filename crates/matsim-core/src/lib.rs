@@ -853,15 +853,23 @@ fn reroute_selected_plan_with_stats(
             network,
         );
         let mut penalized_link_costs = link_costs.clone();
+        let mut current_route_time_s = departure_time_s;
         for link_id in current_route_links {
-            let entry = penalized_link_costs.entry(link_id.to_string()).or_insert_with(|| {
-                network
-                    .links
-                    .get(link_id)
-                    .map(|link| link.length_m / link.freespeed_mps)
-                    .unwrap_or(0.0)
-            });
-            *entry *= 1.05;
+            let observed_cost_s =
+                link_cost_for_departure(link_id, current_route_time_s, link_costs, link_time_profiles);
+            let free_speed_cost_s = network
+                .links
+                .get(link_id)
+                .map(|link| link.length_m / link.freespeed_mps)
+                .unwrap_or(observed_cost_s);
+            let delay_s = (observed_cost_s - free_speed_cost_s).max(0.0);
+            let penalty_factor = if free_speed_cost_s > 0.0 && delay_s > 0.0 {
+                1.0 + (delay_s / free_speed_cost_s).min(2.0)
+            } else {
+                1.02
+            };
+            penalized_link_costs.insert(link_id.to_string(), observed_cost_s * penalty_factor);
+            current_route_time_s += observed_cost_s;
         }
         let alternative_route_node_ids = shortest_route_node_ids_for_departure(
             network,
