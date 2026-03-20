@@ -193,6 +193,7 @@ pub struct RerouteStat {
     pub previous_score: f64,
     pub estimated_rerouted_score: f64,
     pub score_components: Vec<RerouteScoreComponentStat>,
+    pub leg_stats: Vec<RerouteLegStat>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -202,6 +203,19 @@ pub struct RerouteScoreComponentStat {
     pub current_score: f64,
     pub rerouted_score: f64,
     pub delta: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RerouteLegStat {
+    pub leg_index: usize,
+    pub mode: String,
+    pub departure_time_seconds: f64,
+    pub current_cost_seconds: f64,
+    pub rerouted_cost_seconds: f64,
+    pub current_arrival_time_seconds: f64,
+    pub rerouted_arrival_time_seconds: f64,
+    pub current_links: String,
+    pub rerouted_links: String,
 }
 
 #[derive(Debug, Clone)]
@@ -947,6 +961,69 @@ fn reroute_selected_plan_with_stats(
         let rerouted_breakdown =
             score_plan_internal(&rerouted_plan, scoring, network, &rerouted_leg_travel_times);
         let estimated_rerouted_score = rerouted_breakdown.total_score;
+        let mut leg_counter = 0usize;
+        let leg_stats = original_plan
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| match element {
+                PlanElement::Leg(leg) => {
+                    let previous_activity = previous_activity_at(&original_plan, index);
+                    let next_activity = next_activity_at(&original_plan, index);
+                    let current_link_ids = route_link_sequence(leg, previous_activity, next_activity, network)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    let rerouted_leg = match rerouted_plan.elements.get(index) {
+                        Some(PlanElement::Leg(leg)) => leg,
+                        _ => return None,
+                    };
+                    let rerouted_link_ids =
+                        route_link_sequence(rerouted_leg, previous_activity, next_activity, network)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>();
+                    let departure_time_seconds =
+                        leg_departure_time_seconds(&original_plan, index).unwrap_or(0.0);
+                    let stat = RerouteLegStat {
+                        leg_index: leg_counter,
+                        mode: leg.mode.clone(),
+                        departure_time_seconds,
+                        current_cost_seconds: route_cost_from_links(
+                            &current_link_ids,
+                            departure_time_seconds,
+                            link_costs,
+                            link_time_profiles,
+                        ),
+                        rerouted_cost_seconds: route_cost_from_links(
+                            &rerouted_link_ids,
+                            departure_time_seconds,
+                            link_costs,
+                            link_time_profiles,
+                        ),
+                        current_arrival_time_seconds: departure_time_seconds
+                            + route_cost_from_links(
+                                &current_link_ids,
+                                departure_time_seconds,
+                                link_costs,
+                                link_time_profiles,
+                            ),
+                        rerouted_arrival_time_seconds: departure_time_seconds
+                            + route_cost_from_links(
+                                &rerouted_link_ids,
+                                departure_time_seconds,
+                                link_costs,
+                                link_time_profiles,
+                            ),
+                        current_links: current_link_ids.join(","),
+                        rerouted_links: rerouted_link_ids.join(","),
+                    };
+                    leg_counter += 1;
+                    Some(stat)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         rerouted_plan.score = None;
         person.plans.push(rerouted_plan);
         person.selected_plan_index = person.plans.len() - 1;
@@ -1011,6 +1088,7 @@ fn reroute_selected_plan_with_stats(
             previous_score,
             estimated_rerouted_score,
             score_components,
+            leg_stats,
         });
     }
 
@@ -1036,6 +1114,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     write_reroutestats(&output_dir.join("reroutestats.csv"), output)?;
     write_reroute_scorestats(&output_dir.join("reroute_scorestats.csv"), output)?;
     write_reroute_componentstats(&output_dir.join("reroute_componentstats.csv"), output)?;
+    write_reroute_legstats(&output_dir.join("reroute_legstats.csv"), output)?;
     Ok(())
 }
 
@@ -1680,6 +1759,39 @@ fn write_reroute_componentstats(path: &Path, output: &RunOutput) -> Result<(), C
     Ok(())
 }
 
+fn write_reroute_legstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;person_id;leg_index;mode;departure_time_seconds;current_cost_seconds;rerouted_cost_seconds;cost_delta_seconds;current_arrival_time_seconds;rerouted_arrival_time_seconds;current_links;rerouted_links"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        for detail in &iteration.replanning_summary.reroute_details {
+            for leg in &detail.leg_stats {
+                writeln!(
+                    writer,
+                    "{};{};{};{};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{};{}",
+                    iteration.iteration,
+                    detail.person_id,
+                    leg.leg_index,
+                    leg.mode,
+                    leg.departure_time_seconds,
+                    leg.current_cost_seconds,
+                    leg.rerouted_cost_seconds,
+                    leg.current_cost_seconds - leg.rerouted_cost_seconds,
+                    leg.current_arrival_time_seconds,
+                    leg.rerouted_arrival_time_seconds,
+                    leg.current_links,
+                    leg.rerouted_links
+                )
+                .map_err(|source| write_error(path, source))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn csv_writer(path: &Path) -> Result<BufWriter<File>, CoreError> {
     let file = File::create(path).map_err(|source| write_error(path, source))?;
     Ok(BufWriter::new(file))
@@ -2236,6 +2348,22 @@ fn route_node_ids_cost(
         next_activity.as_ref(),
         network,
     ) {
+        let cost_s = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
+        total_cost_s += cost_s;
+        current_time_s += cost_s;
+    }
+    total_cost_s
+}
+
+fn route_cost_from_links(
+    link_ids: &[String],
+    departure_time_s: f64,
+    link_costs: &BTreeMap<String, f64>,
+    link_time_profiles: &BTreeMap<String, BTreeMap<u32, f64>>,
+) -> f64 {
+    let mut current_time_s = departure_time_s;
+    let mut total_cost_s = 0.0;
+    for link_id in link_ids {
         let cost_s = link_cost_for_departure(link_id, current_time_s, link_costs, link_time_profiles);
         total_cost_s += cost_s;
         current_time_s += cost_s;
