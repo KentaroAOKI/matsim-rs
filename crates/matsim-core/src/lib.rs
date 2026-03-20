@@ -153,6 +153,7 @@ pub struct IterationOutput {
     pub mode_stats: Vec<ModeStat>,
     pub travel_distance_stats: TravelDistanceStats,
     pub score_stats: ScoreStats,
+    pub plan_memory_stats: PlanMemoryStats,
     pub observed_link_costs: Vec<LinkCostStat>,
     pub replanning_summary: ReplanningSummary,
 }
@@ -203,6 +204,13 @@ pub struct ScoreStats {
     pub avg_worst: f64,
     pub avg_average: f64,
     pub avg_best: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanMemoryStats {
+    pub avg_plans_per_person: f64,
+    pub max_plans_per_person: usize,
+    pub selected_plan_share: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +406,32 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         avg_average,
         avg_best,
     };
+    let total_plans = scenario
+        .population
+        .persons
+        .iter()
+        .map(|person| person.plans.len())
+        .sum::<usize>();
+    let max_plans_per_person = scenario
+        .population
+        .persons
+        .iter()
+        .map(|person| person.plans.len())
+        .max()
+        .unwrap_or(0);
+    let plan_memory_stats = PlanMemoryStats {
+        avg_plans_per_person: if person_count > 0.0 {
+            total_plans as f64 / person_count
+        } else {
+            0.0
+        },
+        max_plans_per_person,
+        selected_plan_share: if total_plans > 0 {
+            person_count_usize as f64 / total_plans as f64
+        } else {
+            0.0
+        },
+    };
     let replanning_summary =
         apply_replanning_hook(scenario, &executed_scores, &simulation.observed_link_costs, iteration);
     let observed_link_costs = simulation
@@ -414,6 +448,7 @@ fn run_iteration(scenario: &mut Scenario, state: &mut SimulationState, iteration
         mode_stats,
         travel_distance_stats,
         score_stats,
+        plan_memory_stats,
         observed_link_costs,
         replanning_summary,
     }
@@ -629,6 +664,7 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     })?;
 
     write_scorestats(&output_dir.join("scorestats.csv"), output)?;
+    write_planstats(&output_dir.join("planstats.csv"), output)?;
     write_modestats(&output_dir.join("modestats.csv"), output)?;
     write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     write_observed_link_costs(&output_dir.join("observed_link_costs.csv"), output)?;
@@ -773,6 +809,27 @@ fn write_modestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
             write!(writer, ";{:.1}", stat.share).map_err(|source| write_error(path, source))?;
         }
         writeln!(writer).map_err(|source| write_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn write_planstats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
+    let mut writer = csv_writer(path)?;
+    writeln!(
+        writer,
+        "iteration;avg_plans_per_person;max_plans_per_person;selected_plan_share"
+    )
+    .map_err(|source| write_error(path, source))?;
+    for iteration in &output.iterations {
+        writeln!(
+            writer,
+            "{};{:.6};{};{:.6}",
+            iteration.iteration,
+            iteration.plan_memory_stats.avg_plans_per_person,
+            iteration.plan_memory_stats.max_plans_per_person,
+            iteration.plan_memory_stats.selected_plan_share
+        )
+        .map_err(|source| write_error(path, source))?;
     }
     Ok(())
 }

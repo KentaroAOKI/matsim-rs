@@ -666,4 +666,20 @@ mod tests {
         assert_eq!(config.replanning.strategies.len(), 1);
         assert_eq!(config.replanning.strategies[0].name, "BestScore");
     }
+
+    #[test]
+    fn plan_memory_cap_fixture_prunes_plan_counts() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("matsim-rs/examples/plan-memory-cap/config.xml");
+        let scenario = load_scenario(&root).unwrap();
+
+        let output = run_iterations(&scenario);
+        assert_eq!(output.iterations.len(), 2);
+        assert_eq!(output.iterations[0].plan_memory_stats.avg_plans_per_person, 1.5);
+        assert_eq!(output.iterations[0].plan_memory_stats.max_plans_per_person, 2);
+        assert_eq!(output.iterations[1].plan_memory_stats.avg_plans_per_person, 1.0);
+        assert_eq!(output.iterations[1].plan_memory_stats.max_plans_per_person, 1);
+        assert_eq!(output.iterations[1].plan_memory_stats.selected_plan_share, 1.0);
+    }
 }

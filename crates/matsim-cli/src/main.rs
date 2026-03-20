@@ -87,6 +87,12 @@ fn run_command(config_path: &Path) -> Result<(), CliError> {
     if let Some(last) = output.iterations.last() {
         println!("last_iteration_score={:.6}", last.score_stats.avg_executed);
         println!(
+            "last_iteration_plans={{avg_per_person:{:.6},max_per_person:{},selected_share:{:.6}}}",
+            last.plan_memory_stats.avg_plans_per_person,
+            last.plan_memory_stats.max_plans_per_person,
+            last.plan_memory_stats.selected_plan_share
+        );
+        println!(
             "last_iteration_replanning={{strategies_considered:{},persons_replanned:{}}}",
             last.replanning_summary.strategies_considered, last.replanning_summary.persons_replanned
         );
@@ -113,6 +119,7 @@ fn resolve_output_dir(config_path: &Path, configured_output: &str) -> PathBuf {
 fn compare_command(left: &Path, right: &Path) -> Result<(), CliError> {
     for name in [
         "scorestats.csv",
+        "planstats.csv",
         "modestats.csv",
         "traveldistancestats.csv",
         "observed_link_costs.csv",
