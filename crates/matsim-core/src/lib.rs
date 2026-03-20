@@ -25,10 +25,19 @@ pub struct ScoringConfig {
     pub mode_params: BTreeMap<String, ModeScoringParameters>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ReplanningConfig {
     pub strategies: Vec<StrategySetting>,
     pub max_agent_plan_memory_size: Option<usize>,
+}
+
+impl Default for ReplanningConfig {
+    fn default() -> Self {
+        Self {
+            strategies: Vec::new(),
+            max_agent_plan_memory_size: Some(5),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

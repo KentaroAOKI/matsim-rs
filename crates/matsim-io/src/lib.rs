@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(config.replanning.strategies[0].name, "BestScore");
         assert_eq!(config.replanning.strategies[1].weight, 0.1);
         assert_eq!(config.replanning.strategies[0].disable_after_fraction, None);
-        assert_eq!(config.replanning.max_agent_plan_memory_size, None);
+        assert_eq!(config.replanning.max_agent_plan_memory_size, Some(5));
     }
 
     #[test]
