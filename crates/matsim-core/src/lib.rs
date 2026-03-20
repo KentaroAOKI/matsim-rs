@@ -3432,6 +3432,10 @@ struct ProcessedNodeStepBatch {
     crossing: NodeCrossingResult,
 }
 
+struct ProcessedSingleNodeOffer {
+    crossing: NodeCrossingResult,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3923,9 +3927,22 @@ impl QueueSimulationState {
         to_node_id: &str,
         ready_to_leave: &LinkReadyToLeave,
     ) -> ProcessedNodeStepBatch {
+        let processed_offer =
+            self.process_single_node_offer(inbound_link_id, to_node_id, ready_to_leave);
+        ProcessedNodeStepBatch {
+            crossing: processed_offer.crossing,
+        }
+    }
+
+    fn process_single_node_offer(
+        &mut self,
+        inbound_link_id: &str,
+        to_node_id: &str,
+        ready_to_leave: &LinkReadyToLeave,
+    ) -> ProcessedSingleNodeOffer {
         let drained_crossing =
             self.drain_node_crossing(inbound_link_id, to_node_id, ready_to_leave);
-        ProcessedNodeStepBatch {
+        ProcessedSingleNodeOffer {
             crossing: drained_crossing.crossing,
         }
     }
