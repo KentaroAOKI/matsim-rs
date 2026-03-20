@@ -3402,6 +3402,11 @@ struct PendingNodeOffer {
     headway_s: f64,
 }
 
+#[derive(Debug, Default)]
+struct NodeOfferSnapshot {
+    offers_by_inbound: BTreeMap<String, usize>,
+}
+
 fn simulate_pending_leg(
     population: &Population,
     network: &Network,
@@ -3521,6 +3526,10 @@ fn simulate_link_traversal(
         to_node_id: link.to_node_id.clone(),
         headway_s: ready_to_leave.headway_s,
     });
+    let offer_snapshot = queue_state.snapshot_node_offers(
+        &link.to_node_id,
+        ready_to_leave.free_speed_exit_s.floor() as i64,
+    );
     let decision = {
         let queue_node_state = queue_state
             .node_states
@@ -3528,7 +3537,7 @@ fn simulate_link_traversal(
             .or_default();
         queue_node_state.register_inbound_link(link_id);
         queue_node_state.note_ready_vehicle(link_id);
-        queue_node_state.prepare_crossing(link_id, &ready_to_leave)
+        queue_node_state.prepare_crossing(link_id, &ready_to_leave, &offer_snapshot)
     };
     let pending_offer = queue_state.dequeue_pending_offer_for_decision(&decision, &link.to_node_id);
     let crossing = {
@@ -3789,6 +3798,19 @@ impl QueueSimulationState {
         })?;
         self.pending_node_offers.remove(offer_index)
     }
+
+    fn snapshot_node_offers(&self, to_node_id: &str, sim_step: i64) -> NodeOfferSnapshot {
+        let mut snapshot = NodeOfferSnapshot::default();
+        for offer in &self.pending_node_offers {
+            if offer.to_node_id == to_node_id && offer.sim_step == sim_step {
+                *snapshot
+                    .offers_by_inbound
+                    .entry(offer.inbound_link_id.clone())
+                    .or_default() += 1;
+            }
+        }
+        snapshot
+    }
 }
 
 impl QueueNodeState {
@@ -3806,11 +3828,13 @@ impl QueueNodeState {
         &mut self,
         default_inbound_link_id: &str,
         ready_to_leave: &LinkReadyToLeave,
+        offer_snapshot: &NodeOfferSnapshot,
     ) -> NodeCrossingDecision {
         self.selector_state.select_inbound_link(
             default_inbound_link_id,
             ready_to_leave.free_speed_exit_s.floor() as i64,
             &self.offering_buffer_state,
+            offer_snapshot,
             &mut self.selector_window_state,
         )
     }
@@ -3923,14 +3947,16 @@ impl NodeSelectorState {
         default_inbound_link_id: &str,
         sim_step: i64,
         offering_buffer_state: &NodeOfferingBufferState,
+        offer_snapshot: &NodeOfferSnapshot,
         selector_window_state: &mut NodeSelectorWindowState,
     ) -> NodeCrossingDecision {
-        self.refresh_selected_inbound(offering_buffer_state);
+        self.refresh_selected_inbound(offering_buffer_state, offer_snapshot);
         let selected_inbound_link_id = selector_window_state.select_owner(
             sim_step,
             self.selected_inbound_link_id
                 .as_deref()
                 .unwrap_or(default_inbound_link_id),
+            offer_snapshot,
         );
         NodeCrossingDecision {
             sim_step,
@@ -3945,41 +3971,74 @@ impl NodeSelectorState {
         offering_buffer_state: &NodeOfferingBufferState,
     ) {
         self.selected_inbound_link_id = decision.selected_inbound_link_id;
-        self.refresh_selected_inbound(offering_buffer_state);
+        self.refresh_selected_inbound(offering_buffer_state, &NodeOfferSnapshot::default());
     }
 
-    fn refresh_selected_inbound(&mut self, offering_buffer_state: &NodeOfferingBufferState) {
+    fn refresh_selected_inbound(
+        &mut self,
+        offering_buffer_state: &NodeOfferingBufferState,
+        offer_snapshot: &NodeOfferSnapshot,
+    ) {
         let still_valid = self
             .selected_inbound_link_id
             .as_ref()
             .is_some_and(|selected_link_id| {
-                offering_buffer_state
-                    .ready_vehicle_counts
+                offer_snapshot
+                    .offers_by_inbound
                     .get(selected_link_id)
                     .copied()
                     .unwrap_or(0)
                     > 0
-            });
-        if !still_valid {
-            self.selected_inbound_link_id = offering_buffer_state
-                .registered_inbound_links
-                .iter()
-                .find(|inbound_link_id| {
-                    offering_buffer_state
+                    || offering_buffer_state
                         .ready_vehicle_counts
-                        .get(*inbound_link_id)
+                        .get(selected_link_id)
                         .copied()
                         .unwrap_or(0)
                         > 0
-                })
-                .cloned();
+            });
+        if !still_valid {
+            self.selected_inbound_link_id = offer_snapshot
+                .offers_by_inbound
+                .iter()
+                .find(|(_, count)| **count > 0)
+                .map(|(inbound_link_id, _)| inbound_link_id.clone())
+                .or_else(|| {
+                    offering_buffer_state
+                        .registered_inbound_links
+                        .iter()
+                        .find(|inbound_link_id| {
+                            offering_buffer_state
+                                .ready_vehicle_counts
+                                .get(*inbound_link_id)
+                                .copied()
+                                .unwrap_or(0)
+                                > 0
+                        })
+                        .cloned()
+                });
         }
     }
 }
 
 impl NodeSelectorWindowState {
-    fn select_owner(&mut self, sim_step: i64, fallback_inbound_link_id: &str) -> String {
-        if self.sim_step != Some(sim_step) {
+    fn select_owner(
+        &mut self,
+        sim_step: i64,
+        fallback_inbound_link_id: &str,
+        offer_snapshot: &NodeOfferSnapshot,
+    ) -> String {
+        let owner_still_offering =
+            self.owner_inbound_link_id
+                .as_ref()
+                .is_some_and(|owner_inbound_link_id| {
+                    offer_snapshot
+                        .offers_by_inbound
+                        .get(owner_inbound_link_id)
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                });
+        if self.sim_step != Some(sim_step) || !owner_still_offering {
             self.sim_step = Some(sim_step);
             self.owner_inbound_link_id = Some(fallback_inbound_link_id.to_string());
         }
