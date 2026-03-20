@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use matsim_core::{explain_person_score, run_single_iteration, write_outputs};
+use matsim_core::{explain_person_score, run_iterations, write_outputs};
 use matsim_io::load_scenario;
 use thiserror::Error;
 
@@ -68,13 +68,17 @@ fn run() -> Result<(), CliError> {
 
 fn run_command(config_path: &Path) -> Result<(), CliError> {
     let scenario = load_scenario(config_path)?;
-    let output = run_single_iteration(&scenario);
+    let output = run_iterations(&scenario);
     let output_dir = resolve_output_dir(config_path, &scenario.config.output_directory);
     write_outputs(&output_dir, &output)?;
 
     println!("random_seed={}", scenario.config.random_seed);
     println!("persons={}", scenario.population.persons.len());
     println!("network_links={}", scenario.network.links.len());
+    println!("iterations={}", output.iterations.len());
+    if let Some(last) = output.iterations.last() {
+        println!("last_iteration_score={:.6}", last.score_stats.avg_executed);
+    }
     println!("output_dir={}", output_dir.display());
     Ok(())
 }

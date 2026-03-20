@@ -118,6 +118,12 @@ pub struct Leg {
 #[derive(Debug, Clone)]
 pub struct RunOutput {
     pub last_iteration: u32,
+    pub iterations: Vec<IterationOutput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IterationOutput {
+    pub iteration: u32,
     pub mode_stats: Vec<ModeStat>,
     pub travel_distance_stats: TravelDistanceStats,
     pub score_stats: ScoreStats,
@@ -178,7 +184,22 @@ pub enum CoreError {
 
 use thiserror::Error;
 
-pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
+pub fn run_single_iteration(scenario: &Scenario) -> IterationOutput {
+    run_iteration(scenario, 0)
+}
+
+pub fn run_iterations(scenario: &Scenario) -> RunOutput {
+    let iterations = (0..=scenario.config.last_iteration)
+        .map(|iteration| run_iteration(scenario, iteration))
+        .collect();
+
+    RunOutput {
+        last_iteration: scenario.config.last_iteration,
+        iterations,
+    }
+}
+
+fn run_iteration(scenario: &Scenario, iteration: u32) -> IterationOutput {
     let simulated_leg_times = simulate_leg_travel_times(&scenario.population, &scenario.network);
     let mut mode_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_legs = 0usize;
@@ -247,8 +268,8 @@ pub fn run_single_iteration(scenario: &Scenario) -> RunOutput {
         avg_best: score_avg,
     };
 
-    RunOutput {
-        last_iteration: scenario.config.last_iteration,
+    IterationOutput {
+        iteration,
         mode_stats,
         travel_distance_stats,
         score_stats,
@@ -262,16 +283,8 @@ pub fn write_outputs(output_dir: &Path, output: &RunOutput) -> Result<(), CoreEr
     })?;
 
     write_scorestats(&output_dir.join("scorestats.csv"), output)?;
-    write_modestats(
-        &output_dir.join("modestats.csv"),
-        &output.mode_stats,
-        output.last_iteration,
-    )?;
-    write_traveldistancestats(
-        &output_dir.join("traveldistancestats.csv"),
-        &output.travel_distance_stats,
-        output.last_iteration,
-    )?;
+    write_modestats(&output_dir.join("modestats.csv"), output)?;
+    write_traveldistancestats(&output_dir.join("traveldistancestats.csv"), output)?;
     Ok(())
 }
 
@@ -298,32 +311,36 @@ fn write_scorestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
         "iteration;avg_executed;avg_worst;avg_average;avg_best"
     )
     .map_err(|source| write_error(path, source))?;
-    for iteration in 0..=output.last_iteration {
+    for iteration in &output.iterations {
         writeln!(
             writer,
             "{};{:.6};{:.6};{:.6};{:.6}",
-            iteration,
-            output.score_stats.avg_executed,
-            output.score_stats.avg_worst,
-            output.score_stats.avg_average,
-            output.score_stats.avg_best
+            iteration.iteration,
+            iteration.score_stats.avg_executed,
+            iteration.score_stats.avg_worst,
+            iteration.score_stats.avg_average,
+            iteration.score_stats.avg_best
         )
         .map_err(|source| write_error(path, source))?;
     }
     Ok(())
 }
 
-fn write_modestats(path: &Path, stats: &[ModeStat], last_iteration: u32) -> Result<(), CoreError> {
+fn write_modestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
     write!(writer, "iteration").map_err(|source| write_error(path, source))?;
-    for stat in stats {
+    let Some(first_iteration) = output.iterations.first() else {
+        writeln!(writer).map_err(|source| write_error(path, source))?;
+        return Ok(());
+    };
+    for stat in &first_iteration.mode_stats {
         write!(writer, ";{}", stat.mode).map_err(|source| write_error(path, source))?;
     }
     writeln!(writer).map_err(|source| write_error(path, source))?;
 
-    for iteration in 0..=last_iteration {
-        write!(writer, "{iteration}").map_err(|source| write_error(path, source))?;
-        for stat in stats {
+    for iteration in &output.iterations {
+        write!(writer, "{}", iteration.iteration).map_err(|source| write_error(path, source))?;
+        for stat in &iteration.mode_stats {
             write!(writer, ";{:.1}", stat.share).map_err(|source| write_error(path, source))?;
         }
         writeln!(writer).map_err(|source| write_error(path, source))?;
@@ -331,22 +348,20 @@ fn write_modestats(path: &Path, stats: &[ModeStat], last_iteration: u32) -> Resu
     Ok(())
 }
 
-fn write_traveldistancestats(
-    path: &Path,
-    stats: &TravelDistanceStats,
-    last_iteration: u32,
-) -> Result<(), CoreError> {
+fn write_traveldistancestats(path: &Path, output: &RunOutput) -> Result<(), CoreError> {
     let mut writer = csv_writer(path)?;
     writeln!(
         writer,
         "ITERATION;avg. Average Leg distance;avg. Average Trip distance"
     )
     .map_err(|source| write_error(path, source))?;
-    for iteration in 0..=last_iteration {
+    for iteration in &output.iterations {
         writeln!(
             writer,
             "{};{};{}",
-            iteration, stats.avg_leg_distance_per_plan_m, stats.avg_trip_distance_per_plan_m
+            iteration.iteration,
+            iteration.travel_distance_stats.avg_leg_distance_per_plan_m,
+            iteration.travel_distance_stats.avg_trip_distance_per_plan_m
         )
         .map_err(|source| write_error(path, source))?;
     }
